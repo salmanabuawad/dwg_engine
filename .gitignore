@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.claude/
+.git/
+server_files/uploads/
+server_files/outputs/
