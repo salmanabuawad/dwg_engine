@@ -23,3 +23,24 @@ Do not revert to:
 - global same-length grouping
 - processing tables/legends as walls
 - deleting this guard file
+
+
+## Critical fix added
+
+The system must isolate architectural geometry before dimensioning.
+
+Never use:
+- page frame lines
+- title border lines
+- sheet rectangles
+- sparse full-sheet geometry
+
+as:
+- dimension bbox
+- wall edges
+- perimeter dimensions
+
+Main protection module:
+`app.engine.isolation.main_plan_isolation`
+
+Do not remove it.
