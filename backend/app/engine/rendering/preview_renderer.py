@@ -8,11 +8,32 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
+
+def _mtext_plain(text: str) -> str:
+    """Strip the simplest ezdxf MTEXT control codes so they don't appear
+    literally in the rendered preview. Best-effort — full MTEXT parsing is
+    out of scope for a thumbnail."""
+    if not text:
+        return ""
+    out = (
+        text.replace("\\P", "\n")
+            .replace("\\~", " ")
+    )
+    while "\\f" in out:
+        i = out.find("\\f")
+        j = out.find(";", i)
+        if j < 0:
+            break
+        out = out[:i] + out[j + 1:]
+    return out
+
+
 def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None = None) -> bool:
     doc = ezdxf.readfile(str(dxf_path))
     msp = doc.modelspace()
     segs = []
     dims = []
+    texts = []
 
     def add_seg(x1, y1, x2, y2, layer):
         if math.hypot(x2 - x1, y2 - y1) > 1e-6:
@@ -52,6 +73,18 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
                     "ori": "H" if is_h else "V",
                     "length": float(length),
                 })
+            elif t == "TEXT":
+                p = e.dxf.insert
+                content = (e.dxf.text or "").strip()
+                if content:
+                    size = float(getattr(e.dxf, "height", 0) or 0) or None
+                    texts.append({"x": float(p.x), "y": float(p.y), "text": content, "size": size})
+            elif t == "MTEXT":
+                p = e.dxf.insert
+                content = _mtext_plain((e.text if hasattr(e, "text") else "") or "").strip()
+                if content:
+                    size = float(getattr(e.dxf, "char_height", 0) or 0) or None
+                    texts.append({"x": float(p.x), "y": float(p.y), "text": content, "size": size})
         except Exception:
             pass
 
@@ -60,12 +93,34 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
         if "DIM" not in layer.upper():
             xs += [x1, x2]
             ys += [y1, y2]
+    for d in dims:
+        xs += [d["p1"][0], d["p2"][0], d["base"][0]]
+        ys += [d["p1"][1], d["p2"][1], d["base"][1]]
+    for t in texts:
+        xs.append(t["x"])
+        ys.append(t["y"])
 
     if not xs:
-        return False
+        # Nothing at all — emit a minimal "(empty drawing)" placeholder so
+        # the UI's preview iframe still has something to show.
+        fig, ax = plt.subplots(figsize=(14, 10), facecolor="white")
+        ax.text(0.5, 0.5, "(empty drawing)", fontsize=14, ha="center", va="center",
+                transform=ax.transAxes, color="#94a3b8")
+        ax.axis("off")
+        output_png.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_png, dpi=200, bbox_inches="tight", facecolor="white")
+        if output_pdf:
+            fig.savefig(output_pdf, dpi=200, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        return True
 
-    xlo, xhi = np.percentile(xs, [1, 99])
-    ylo, yhi = np.percentile(ys, [1, 99])
+    xlo, xhi = (np.percentile(xs, [1, 99]) if len(xs) >= 4 else (min(xs), max(xs)))
+    ylo, yhi = (np.percentile(ys, [1, 99]) if len(ys) >= 4 else (min(ys), max(ys)))
+    # If the bbox is degenerate (single point or a line), inflate it.
+    if xhi - xlo < 1e-6:
+        xhi = xlo + 1.0
+    if yhi - ylo < 1e-6:
+        yhi = ylo + 1.0
     width, height = xhi - xlo, yhi - ylo
     base = max(1.0, min(width, height))
     pad = max(width, height) * 0.18
@@ -127,6 +182,11 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
                 ha="center",
                 va="center",
             )
+
+    text_fontsize = max(5.0, min(11.0, base * 0.012))
+    for t in texts:
+        ax.text(t["x"], t["y"], t["text"], fontsize=text_fontsize,
+                ha="left", va="bottom", color="#0f172a")
 
     ax.set_xlim(xlo - pad, xhi + pad)
     ax.set_ylim(ylo - pad, yhi + pad)
