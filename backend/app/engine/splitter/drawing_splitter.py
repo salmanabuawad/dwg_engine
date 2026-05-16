@@ -101,7 +101,17 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
         return []
 
     centers = np.array([c for _, c in seeds], dtype=float)
-    eps = max(250.0, min(gw, gh) * 0.035)
+    # eps governs DBSCAN's reachability — two seeds within this distance
+    # cluster together. The old `min(gw,gh) * 0.035` collapses on sheets
+    # with a strong aspect ratio (e.g. a horizontal strip of 8 small
+    # drawings, gw=1.0M gh=130k gave eps=4655 — bigger than every
+    # inter-drawing gap, so everything merged into one). Scale instead
+    # with the geometric mean of width × height (= sqrt of sheet area),
+    # which stays sensible whether the sheet is square or elongated.
+    # Override at runtime with the SPLITTER_EPS env var if needed.
+    import os as _os
+    eps_env = _os.environ.get("SPLITTER_EPS")
+    eps = float(eps_env) if eps_env else max(250.0, ((gw * gh) ** 0.5) * 0.005)
 
     visited = np.zeros(len(seeds), dtype=bool)
     clusters = []
