@@ -1,4 +1,4 @@
-import { Download, FileText, Trash2 } from 'lucide-react';
+import { Download, Eye, FileText, Trash2 } from 'lucide-react';
 import { api, Job } from '../api';
 
 interface Props {
@@ -24,11 +24,30 @@ export function JobList({ jobs, selectedId, onSelect, onDelete }: Props) {
               <div className="truncate text-sm font-semibold text-slate-900">{job.filename}</div>
               <div className="mt-1 text-xs text-slate-500">{job.status}</div>
               {job.status === 'done' && (
-                <div className="mt-2 flex gap-2">
-                  <a href={api.pdfUrl(job.id)} target="_blank" className="inline-flex items-center gap-1 rounded bg-slate-900 px-2 py-1 text-xs text-white" onClick={(e) => e.stopPropagation()}>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <a
+                    href={api.pdfUrl(job.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Eye className="h-3 w-3" /> Preview
+                  </a>
+                  <a
+                    href={api.pdfUrl(job.id)}
+                    download
+                    className="inline-flex items-center gap-1 rounded bg-slate-900 px-2 py-1 text-xs text-white hover:bg-slate-800"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <Download className="h-3 w-3" /> PDF
                   </a>
-                  <a href={api.dxfUrl(job.id)} className="inline-flex items-center gap-1 rounded bg-slate-200 px-2 py-1 text-xs text-slate-800" onClick={(e) => e.stopPropagation()}>
+                  <a
+                    href={api.dxfUrl(job.id)}
+                    download
+                    className="inline-flex items-center gap-1 rounded bg-slate-200 px-2 py-1 text-xs text-slate-800 hover:bg-slate-300"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <Download className="h-3 w-3" /> DXF
                   </a>
                 </div>
