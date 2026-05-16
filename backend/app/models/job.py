@@ -1,16 +1,28 @@
-from sqlalchemy import Column, DateTime, Integer, JSON, String
-from sqlalchemy.sql import func
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from sqlalchemy import Column, DateTime, Integer, JSON, String, Text
 from app.database import Base
 
-class ProcessingJob(Base):
-    __tablename__ = "processing_jobs"
 
-    id = Column(Integer, primary_key=True, index=True)
-    filename = Column(String, nullable=False)
-    input_type = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="created")
-    output_dir = Column(String, nullable=True)
-    result = Column(JSON, nullable=True)
-    error = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id = Column(String(64), primary_key=True)
+    filename = Column(String(512), nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    size_bytes = Column(Integer, nullable=False, default=0)
+    error = Column(Text, nullable=True)
+    report = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    done_at = Column(DateTime(timezone=True), nullable=True)
+
+    input_path = Column(String(1024), nullable=False)
+    output_dxf_path = Column(String(1024), nullable=True)
+    preview_pdf_path = Column(String(1024), nullable=True)
+    preview_png_path = Column(String(1024), nullable=True)
