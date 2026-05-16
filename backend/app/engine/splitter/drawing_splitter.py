@@ -94,39 +94,45 @@ def _explicit_drawing_layers() -> set[str] | None:
     return {layer.strip() for layer in raw.split(",") if layer.strip()}
 
 
-def _dbscan_count(centers: np.ndarray, eps: float) -> int:
-    """Return the number of connected components in `centers` under
-    Euclidean-distance threshold eps. Used to score candidate drawing
-    layers."""
+def _dbscan_components(centers: np.ndarray, eps: float) -> list[list[int]]:
+    """DBSCAN-style connected components keyed by index into `centers`."""
     n = len(centers)
     if n == 0:
-        return 0
+        return []
     visited = np.zeros(n, dtype=bool)
-    count = 0
+    comps: list[list[int]] = []
     for i in range(n):
         if visited[i]:
             continue
-        stack = [i]
-        visited[i] = True
+        stack = [i]; visited[i] = True; comp = []
         while stack:
-            j = stack.pop()
+            j = stack.pop(); comp.append(j)
             d = np.sqrt(((centers - centers[j]) ** 2).sum(axis=1))
             for k in np.where(d <= eps)[0]:
                 if not visited[k]:
-                    visited[k] = True
-                    stack.append(int(k))
-        count += 1
-    return count
+                    visited[k] = True; stack.append(int(k))
+        comps.append(comp)
+    return comps
 
 
 def _autodetect_drawing_layers(records: list[dict], eps: float, gw: float, gh: float) -> set[str] | None:
-    """Pick the geometry-bearing layer(s) most likely to hold the actual
-    drawing content. A drawing layer's geometry forms multiple distinct
-    clusters (one per building / floor plan). A sheet-decoration layer's
-    geometry forms a single sprawling cluster (the title block / frame).
-    Returns the layer(s) tied at the top by cluster count, or None to
-    skip layer filtering altogether when nothing scores meaningfully.
+    """Pick the layer(s) carrying the building drawing.
+
+    A drawing layer's LINE/LWPOLYLINE/POLYLINE geometry forms multiple
+    *substantial* clusters — one per building or floor plan, each with
+    dozens of lines. A title-block / schedule / frame layer either forms
+    one sprawling cluster (all its geometry is connected through cell
+    borders) or many tiny clusters (each schedule cell has only a few
+    lines).
+
+    We score each candidate layer by the number of clusters that contain
+    enough LINE-like entities to be a building (≥ SPLITTER_MIN_GEOM, or
+    20 by default). Schedule cells fail this bar; buildings pass. The
+    winning layer is the one with the most building-sized clusters.
     """
+    import os as _os
+    geom_min = int(_os.environ.get("SPLITTER_MIN_GEOM", "20"))
+
     from collections import defaultdict
     by_layer_pts: dict[str, list[tuple[int, tuple[float, float]]]] = defaultdict(list)
     for i, r in enumerate(records):
@@ -138,23 +144,23 @@ def _autodetect_drawing_layers(records: list[dict], eps: float, gw: float, gh: f
     if not by_layer_pts:
         return None
 
-    scores: list[tuple[str, int, int]] = []
+    scores: list[tuple[str, int, int]] = []  # (layer, building_clusters, total_lines)
     for layer, pts in by_layer_pts.items():
-        if len(pts) < 8:
+        if len(pts) < geom_min:
             continue
         centers = np.array([c for _, c in pts], dtype=float)
-        n_clusters = _dbscan_count(centers, eps)
-        scores.append((layer, n_clusters, len(pts)))
+        comps = _dbscan_components(centers, eps)
+        building_sized = sum(1 for c in comps if len(c) >= geom_min)
+        scores.append((layer, building_sized, len(pts)))
 
     if not scores:
         return None
 
     scores.sort(key=lambda s: (-s[1], -s[2]))
     top_n = scores[0][1]
-    # Only filter by layer if the winner shows real spatial diversity
-    # (more than one cluster). A single-drawing file gives top_n == 1 and
-    # layer filtering buys us nothing — leave the whitelist unset.
-    if top_n < 2:
+    # If even the best layer has zero building-sized clusters, layer
+    # filtering buys us nothing — let the no-filter pass handle it.
+    if top_n < 1:
         return None
     return {s[0] for s in scores if s[1] == top_n}
 
