@@ -126,7 +126,7 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
 
         clusters.append(comp)
 
-    infos = []
+    candidates = []
     for cid, comp in enumerate(clusters, start=1):
         xs, ys = [], []
         types = {}
@@ -142,7 +142,7 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
         area = (b[2] - b[0]) * (b[3] - b[1])
 
         if len(comp) >= 10 or area > 10000:
-            infos.append({
+            candidates.append({
                 "id": cid,
                 "indices": comp,
                 "bbox": b,
@@ -150,6 +150,20 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
                 "entity_count": len(comp),
                 "types": types,
             })
+
+    # A "real" drawing must have structural geometry (lines / polylines).
+    # Pure text/dim clusters are sheet annotations (titles, callouts), not
+    # drawings — keeping them creates phantom rows in the UI and steals
+    # entities away from the actual drawing they belong to.
+    def geom_count(c: dict) -> int:
+        t = c["types"]
+        return t.get("LINE", 0) + t.get("LWPOLYLINE", 0) + t.get("POLYLINE", 0)
+
+    real = [c for c in candidates if geom_count(c) >= 4]
+    # Safety net: never return zero clusters from a non-empty file — if
+    # the geometry filter dropped everything, fall back to the original
+    # size/count filter so the engine still has something to dimension.
+    infos = real if real else candidates
 
     return sorted(infos, key=lambda c: (c["area"], c["entity_count"]), reverse=True)
 
