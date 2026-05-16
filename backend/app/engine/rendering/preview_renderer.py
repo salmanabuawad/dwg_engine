@@ -8,24 +8,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
 
+from app.engine.geometry.line_registry import extract_lines_from_doc
+from app.engine.isolation.main_plan_isolation import isolate_architectural_lines, bbox_from_lines
+
 
 def _mtext_plain(text: str) -> str:
-    """Strip the simplest ezdxf MTEXT control codes so they don't appear
-    literally in the rendered preview. Best-effort — full MTEXT parsing is
-    out of scope for a thumbnail."""
     if not text:
         return ""
-    out = (
-        text.replace("\\P", "\n")
-            .replace("\\~", " ")
-    )
+    out = text.replace("\\P", "\n").replace("\\~", " ")
     while "\\f" in out:
         i = out.find("\\f")
         j = out.find(";", i)
         if j < 0:
             break
-        out = out[:i] + out[j + 1:]
+        out = out[:i] + out[j + 1 :]
     return out
+
+
+def _architectural_preview_bbox(doc):
+    lines = [l for l in extract_lines_from_doc(doc) if l.orientation in ("H", "V") and l.length >= 30]
+    arch, _ = isolate_architectural_lines(lines)
+    if arch:
+        return bbox_from_lines(arch), arch
+    if lines:
+        return bbox_from_lines(lines), lines
+    return (0, 0, 1, 1), []
 
 
 def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None = None) -> bool:
@@ -35,9 +42,19 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
     dims = []
     texts = []
 
+    arch_bbox, arch_lines = _architectural_preview_bbox(doc)
+    axlo, aylo, axhi, ayhi = arch_bbox
+    aw, ah = max(1.0, axhi - axlo), max(1.0, ayhi - aylo)
+
+    def in_arch_area(x, y, pad_factor=0.25):
+        pad = max(aw, ah) * pad_factor
+        return axlo - pad <= x <= axhi + pad and aylo - pad <= y <= ayhi + pad
+
     def add_seg(x1, y1, x2, y2, layer):
         if math.hypot(x2 - x1, y2 - y1) > 1e-6:
-            segs.append((float(x1), float(y1), float(x2), float(y2), layer))
+            # Suppress page-frame lines far outside architectural cluster.
+            if in_arch_area((x1 + x2) / 2.0, (y1 + y2) / 2.0):
+                segs.append((float(x1), float(y1), float(x2), float(y2), layer))
 
     for e in msp:
         t = e.dxftype()
@@ -63,6 +80,8 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
                 p1 = e.dxf.defpoint2
                 p2 = e.dxf.defpoint3
                 bp = e.dxf.defpoint
+                if not in_arch_area(bp.x, bp.y, pad_factor=0.45):
+                    continue
                 angle = float(getattr(e.dxf, "angle", 0) or 0)
                 is_h = abs(angle) < 45 or abs(angle - 180) < 45
                 length = abs(p2.x - p1.x) if is_h else abs(p2.y - p1.y)
@@ -76,15 +95,13 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
             elif t == "TEXT":
                 p = e.dxf.insert
                 content = (e.dxf.text or "").strip()
-                if content:
-                    size = float(getattr(e.dxf, "height", 0) or 0) or None
-                    texts.append({"x": float(p.x), "y": float(p.y), "text": content, "size": size})
+                if content and in_arch_area(p.x, p.y, pad_factor=0.15):
+                    texts.append({"x": float(p.x), "y": float(p.y), "text": content})
             elif t == "MTEXT":
                 p = e.dxf.insert
                 content = _mtext_plain((e.text if hasattr(e, "text") else "") or "").strip()
-                if content:
-                    size = float(getattr(e.dxf, "char_height", 0) or 0) or None
-                    texts.append({"x": float(p.x), "y": float(p.y), "text": content, "size": size})
+                if content and in_arch_area(p.x, p.y, pad_factor=0.15):
+                    texts.append({"x": float(p.x), "y": float(p.y), "text": content})
         except Exception:
             pass
 
@@ -101,11 +118,8 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
         ys.append(t["y"])
 
     if not xs:
-        # Nothing at all — emit a minimal "(empty drawing)" placeholder so
-        # the UI's preview iframe still has something to show.
         fig, ax = plt.subplots(figsize=(14, 10), facecolor="white")
-        ax.text(0.5, 0.5, "(empty drawing)", fontsize=14, ha="center", va="center",
-                transform=ax.transAxes, color="#94a3b8")
+        ax.text(0.5, 0.5, "(empty drawing)", fontsize=14, ha="center", va="center", transform=ax.transAxes, color="#94a3b8")
         ax.axis("off")
         output_png.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output_png, dpi=200, bbox_inches="tight", facecolor="white")
@@ -116,11 +130,11 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
 
     xlo, xhi = (np.percentile(xs, [1, 99]) if len(xs) >= 4 else (min(xs), max(xs)))
     ylo, yhi = (np.percentile(ys, [1, 99]) if len(ys) >= 4 else (min(ys), max(ys)))
-    # If the bbox is degenerate (single point or a line), inflate it.
     if xhi - xlo < 1e-6:
         xhi = xlo + 1.0
     if yhi - ylo < 1e-6:
         yhi = ylo + 1.0
+
     width, height = xhi - xlo, yhi - ylo
     base = max(1.0, min(width, height))
     pad = max(width, height) * 0.18
@@ -158,14 +172,7 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
             draw_arrow((p1[0], bp[1]), (1, 0), arrow_size)
             draw_arrow((p2[0], bp[1]), (-1, 0), arrow_size)
             side = 1 if bp[1] >= (ylo + yhi) / 2 else -1
-            ax.text(
-                (p1[0] + p2[0]) / 2,
-                bp[1] + side * text_offset,
-                str(int(round(d["length"]))),
-                fontsize=4.2,
-                ha="center",
-                va="center",
-            )
+            ax.text((p1[0] + p2[0]) / 2, bp[1] + side * text_offset, str(int(round(d["length"]))), fontsize=4.5, ha="center", va="center")
         else:
             ax.plot([bp[0], bp[0]], [p1[1], p2[1]], color="black", linewidth=0.42)
             ax.plot([p1[0], bp[0]], [p1[1], p1[1]], color="black", linewidth=0.22)
@@ -173,20 +180,11 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
             draw_arrow((bp[0], p1[1]), (0, 1), arrow_size)
             draw_arrow((bp[0], p2[1]), (0, -1), arrow_size)
             side = 1 if bp[0] >= (xlo + xhi) / 2 else -1
-            ax.text(
-                bp[0] + side * text_offset,
-                (p1[1] + p2[1]) / 2,
-                str(int(round(d["length"]))),
-                fontsize=4.2,
-                rotation=90,
-                ha="center",
-                va="center",
-            )
+            ax.text(bp[0] + side * text_offset, (p1[1] + p2[1]) / 2, str(int(round(d["length"]))), fontsize=4.5, rotation=90, ha="center", va="center")
 
-    text_fontsize = max(5.0, min(11.0, base * 0.012))
+    text_fontsize = max(5.0, min(10.0, base * 0.010))
     for t in texts:
-        ax.text(t["x"], t["y"], t["text"], fontsize=text_fontsize,
-                ha="left", va="bottom", color="#0f172a")
+        ax.text(t["x"], t["y"], t["text"], fontsize=text_fontsize, ha="left", va="bottom", color="#0f172a")
 
     ax.set_xlim(xlo - pad, xhi + pad)
     ax.set_ylim(ylo - pad, yhi + pad)
