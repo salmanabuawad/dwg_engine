@@ -111,7 +111,7 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
     # Override at runtime with the SPLITTER_EPS env var if needed.
     import os as _os
     eps_env = _os.environ.get("SPLITTER_EPS")
-    eps = float(eps_env) if eps_env else max(250.0, ((gw * gh) ** 0.5) * 0.005)
+    eps = float(eps_env) if eps_env else max(250.0, ((gw * gh) ** 0.5) * 0.004)
 
     visited = np.zeros(len(seeds), dtype=bool)
     clusters = []
@@ -169,7 +169,14 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
         t = c["types"]
         return t.get("LINE", 0) + t.get("LWPOLYLINE", 0) + t.get("POLYLINE", 0)
 
-    real = [c for c in candidates if geom_count(c) >= 4]
+    # A building drawing has substantial geometry — walls, lines, polylines.
+    # Threshold tuned high enough that small clusters (dim chains, callouts,
+    # title fragments) get filtered out and absorbed via strict partition
+    # routing, but low enough that a small floor plan still qualifies.
+    # Override via SPLITTER_MIN_GEOM env var.
+    import os as _os2
+    geom_min = int(_os2.environ.get("SPLITTER_MIN_GEOM", "20"))
+    real = [c for c in candidates if geom_count(c) >= geom_min]
     # Safety net: never return zero clusters from a non-empty file — if
     # the geometry filter dropped everything, fall back to the original
     # size/count filter so the engine still has something to dimension.
