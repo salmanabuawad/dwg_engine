@@ -122,6 +122,11 @@ WorkingDirectory=$APP_DIR/backend
 Environment=DATABASE_URL=postgresql+psycopg2://$DB_USER:$DB_PASS@localhost:5432/$DB_NAME
 Environment=STORAGE_DIR=$APP_DIR/backend/storage
 Environment=PYTHONUNBUFFERED=1
+# Splitter: drawing-layer whitelist. Only entities on these layers seed the
+# multi-drawing clustering; sheet decoration (title block, frame, schedule)
+# on other layers gets dropped from each split output. Falls back to
+# no-filter automatically if no entities match. Comma-separated.
+Environment=SPLITTER_DRAWING_LAYERS=BAR-GAL
 ExecStart=$APP_DIR/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port $PORT --workers 1 --no-access-log
 Restart=always
 RestartSec=5

@@ -85,17 +85,41 @@ def collect_entities(doc: Any) -> tuple[list[dict], BBox]:
 
     return records, (min(all_x), min(all_y), max(all_x), max(all_y))
 
+def _drawing_layers() -> set[str] | None:
+    """Layers whose entities seed the clustering. If set (via env var
+    SPLITTER_DRAWING_LAYERS=A,B,C), only entities on those layers count as
+    drawing content; everything else (title block, frame, schedule) is
+    filtered out before clustering. If unset, every eligible entity seeds.
+    """
+    import os as _os
+    raw = _os.environ.get("SPLITTER_DRAWING_LAYERS", "").strip()
+    if not raw:
+        return None
+    return {layer.strip() for layer in raw.split(",") if layer.strip()}
+
+
 def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict]:
     gx1, gy1, gx2, gy2 = global_bbox
     gw, gh = gx2 - gx1, gy2 - gy1
 
-    seeds = []
-    for i, r in enumerate(records):
-        # Hard reject huge sheet/page/frame entities during clustering.
-        if r["w"] > gw * 0.60 or r["h"] > gh * 0.60:
-            continue
-        if r["type"] in ("LINE", "LWPOLYLINE", "POLYLINE", "DIMENSION", "TEXT", "MTEXT", "INSERT"):
-            seeds.append((i, r["center"]))
+    drawing_layers = _drawing_layers()
+
+    def _build_seeds(filter_by_layer: bool) -> list:
+        out = []
+        for i, r in enumerate(records):
+            if r["w"] > gw * 0.60 or r["h"] > gh * 0.60:
+                continue
+            if filter_by_layer and drawing_layers is not None and r["layer"] not in drawing_layers:
+                continue
+            if r["type"] in ("LINE", "LWPOLYLINE", "POLYLINE", "DIMENSION", "TEXT", "MTEXT", "INSERT"):
+                out.append((i, r["center"]))
+        return out
+
+    seeds = _build_seeds(filter_by_layer=True)
+    if not seeds and drawing_layers is not None:
+        # Layer whitelist matched nothing — fall back to no-filter so the
+        # file still produces output instead of zero drawings.
+        seeds = _build_seeds(filter_by_layer=False)
 
     if not seeds:
         return []
@@ -212,14 +236,38 @@ def split_dxf(input_dxf: Path, output_dir: Path) -> dict:
             ((c["bbox"][0] + c["bbox"][2]) / 2.0, (c["bbox"][1] + c["bbox"][3]) / 2.0)
             for c in clusters
         ], dtype=float)
+        # Pre-compute each cluster's expanded bbox so we can decide whether a
+        # stray record (e.g. a dimension on the VP layer, a label) is close
+        # enough to a drawing to be attached, or is sheet decoration (title
+        # block, schedule, frame) that should be dropped.
+        cluster_expanded = []
+        for c in clusters:
+            b = c["bbox"]
+            pad = max(b[2] - b[0], b[3] - b[1]) * 0.15
+            cluster_expanded.append((b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad))
+
+        def near_any_cluster(rec_bbox) -> int:
+            """Return the index of a cluster whose expanded bbox contains
+            rec_bbox's center, else -1."""
+            cx = (rec_bbox[0] + rec_bbox[2]) / 2.0
+            cy = (rec_bbox[1] + rec_bbox[3]) / 2.0
+            for ki, eb in enumerate(cluster_expanded):
+                if eb[0] <= cx <= eb[2] and eb[1] <= cy <= eb[3]:
+                    return ki
+            return -1
+
         for i, r in enumerate(records):
             if ownership[i] != -1:
                 continue
             # Frame / title-block sized entities never get assigned.
             if r["w"] > gw * 0.60 or r["h"] > gh * 0.60:
                 continue
-            d = np.sqrt(((cluster_centers - np.array(r["center"], dtype=float)) ** 2).sum(axis=1))
-            ownership[i] = int(np.argmin(d))
+            # If the entity sits inside some drawing's expanded bbox, attach
+            # it to that drawing. Otherwise it's sheet decoration (title
+            # block, frame, schedule) — drop it from every output.
+            hit = near_any_cluster(r["bbox"])
+            if hit >= 0:
+                ownership[i] = hit
 
     buckets: list[list[int]] = [[] for _ in clusters]
     for i, owner in enumerate(ownership):
