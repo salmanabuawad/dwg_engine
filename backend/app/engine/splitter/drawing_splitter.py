@@ -85,12 +85,8 @@ def collect_entities(doc: Any) -> tuple[list[dict], BBox]:
 
     return records, (min(all_x), min(all_y), max(all_x), max(all_y))
 
-def _drawing_layers() -> set[str] | None:
-    """Layers whose entities seed the clustering. If set (via env var
-    SPLITTER_DRAWING_LAYERS=A,B,C), only entities on those layers count as
-    drawing content; everything else (title block, frame, schedule) is
-    filtered out before clustering. If unset, every eligible entity seeds.
-    """
+def _explicit_drawing_layers() -> set[str] | None:
+    """Read SPLITTER_DRAWING_LAYERS env var. Returns None if unset."""
     import os as _os
     raw = _os.environ.get("SPLITTER_DRAWING_LAYERS", "").strip()
     if not raw:
@@ -98,11 +94,84 @@ def _drawing_layers() -> set[str] | None:
     return {layer.strip() for layer in raw.split(",") if layer.strip()}
 
 
+def _dbscan_count(centers: np.ndarray, eps: float) -> int:
+    """Return the number of connected components in `centers` under
+    Euclidean-distance threshold eps. Used to score candidate drawing
+    layers."""
+    n = len(centers)
+    if n == 0:
+        return 0
+    visited = np.zeros(n, dtype=bool)
+    count = 0
+    for i in range(n):
+        if visited[i]:
+            continue
+        stack = [i]
+        visited[i] = True
+        while stack:
+            j = stack.pop()
+            d = np.sqrt(((centers - centers[j]) ** 2).sum(axis=1))
+            for k in np.where(d <= eps)[0]:
+                if not visited[k]:
+                    visited[k] = True
+                    stack.append(int(k))
+        count += 1
+    return count
+
+
+def _autodetect_drawing_layers(records: list[dict], eps: float, gw: float, gh: float) -> set[str] | None:
+    """Pick the geometry-bearing layer(s) most likely to hold the actual
+    drawing content. A drawing layer's geometry forms multiple distinct
+    clusters (one per building / floor plan). A sheet-decoration layer's
+    geometry forms a single sprawling cluster (the title block / frame).
+    Returns the layer(s) tied at the top by cluster count, or None to
+    skip layer filtering altogether when nothing scores meaningfully.
+    """
+    from collections import defaultdict
+    by_layer_pts: dict[str, list[tuple[int, tuple[float, float]]]] = defaultdict(list)
+    for i, r in enumerate(records):
+        if r["w"] > gw * 0.60 or r["h"] > gh * 0.60:
+            continue
+        if r["type"] in ("LINE", "LWPOLYLINE", "POLYLINE"):
+            by_layer_pts[r["layer"]].append((i, r["center"]))
+
+    if not by_layer_pts:
+        return None
+
+    scores: list[tuple[str, int, int]] = []
+    for layer, pts in by_layer_pts.items():
+        if len(pts) < 8:
+            continue
+        centers = np.array([c for _, c in pts], dtype=float)
+        n_clusters = _dbscan_count(centers, eps)
+        scores.append((layer, n_clusters, len(pts)))
+
+    if not scores:
+        return None
+
+    scores.sort(key=lambda s: (-s[1], -s[2]))
+    top_n = scores[0][1]
+    # Only filter by layer if the winner shows real spatial diversity
+    # (more than one cluster). A single-drawing file gives top_n == 1 and
+    # layer filtering buys us nothing — leave the whitelist unset.
+    if top_n < 2:
+        return None
+    return {s[0] for s in scores if s[1] == top_n}
+
+
 def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict]:
     gx1, gy1, gx2, gy2 = global_bbox
     gw, gh = gx2 - gx1, gy2 - gy1
 
-    drawing_layers = _drawing_layers()
+    # Compute eps first — auto-layer-detection scores layers by cluster
+    # count at the same eps the main pass will use, so they have to agree.
+    import os as _os
+    eps_env = _os.environ.get("SPLITTER_EPS")
+    eps = float(eps_env) if eps_env else max(250.0, ((gw * gh) ** 0.5) * 0.004)
+
+    drawing_layers = _explicit_drawing_layers()
+    if drawing_layers is None:
+        drawing_layers = _autodetect_drawing_layers(records, eps, gw, gh)
 
     def _build_seeds(filter_by_layer: bool) -> list:
         out = []
@@ -125,18 +194,7 @@ def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict
         return []
 
     centers = np.array([c for _, c in seeds], dtype=float)
-    # eps governs DBSCAN's reachability — two seeds within this distance
-    # cluster together. The old `min(gw,gh) * 0.035` collapses on sheets
-    # with a strong aspect ratio (e.g. a horizontal strip of 8 small
-    # drawings, gw=1.0M gh=130k gave eps=4655 — bigger than every
-    # inter-drawing gap, so everything merged into one). Scale instead
-    # with the geometric mean of width × height (= sqrt of sheet area),
-    # which stays sensible whether the sheet is square or elongated.
-    # Override at runtime with the SPLITTER_EPS env var if needed.
-    import os as _os
-    eps_env = _os.environ.get("SPLITTER_EPS")
-    eps = float(eps_env) if eps_env else max(250.0, ((gw * gh) ** 0.5) * 0.004)
-
+    # eps was computed above (auto-layer-detection needs the same value).
     visited = np.zeros(len(seeds), dtype=bool)
     clusters = []
 
