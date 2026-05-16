@@ -157,12 +157,16 @@ def _autodetect_drawing_layers(records: list[dict], eps: float, gw: float, gh: f
         return None
 
     scores.sort(key=lambda s: (-s[1], -s[2]))
-    top_n = scores[0][1]
     # If even the best layer has zero building-sized clusters, layer
     # filtering buys us nothing — let the no-filter pass handle it.
-    if top_n < 1:
+    if scores[0][1] < 1:
         return None
-    return {s[0] for s in scores if s[1] == top_n}
+    # Pick a single winner (most building-sized clusters; ties broken by
+    # total LINE-like entity count). Returning every layer tied at the
+    # top mingles building geometry with schedule cells that happen to
+    # form the same cluster count by coincidence — e.g. a sheet with 8
+    # buildings whose schedule table happens to have 8 rows.
+    return {scores[0][0]}
 
 
 def detect_drawing_clusters(records: list[dict], global_bbox: BBox) -> list[dict]:
