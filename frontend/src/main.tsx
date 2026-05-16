@@ -1,52 +1,34 @@
-import React, { useState } from "react";
-import { createRoot } from "react-dom/client";
-import { Upload } from "lucide-react";
-import "./style.css";
+import React from "react";
+import ReactDOM from "react-dom/client";
+import { ModuleRegistry, AllCommunityModule } from "ag-grid-community";
+import { registerSW } from "virtual:pwa-register";
+import App from "./App";
+import "./i18n/i18n";
+import "./index.css";
 
-function App() {
-  const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+ModuleRegistry.registerModules([AllCommunityModule]);
 
-  async function submit() {
-    if (!file) return;
-    setLoading(true);
-    setResult(null);
+// Service-worker update + offline support
+// ----------------------------------------
+// vite-plugin-pwa is configured as `registerType: "autoUpdate"` — a new
+// SW installs in the background and sends `skipWaiting()` automatically.
+// Once the new SW takes control, `controllerchange` fires; we use that as
+// the cue to reload so open tabs don't keep running the old JS bundle.
+// The same SW also Workbox-precaches the app shell (JS/CSS/HTML/icons),
+// so the app boots fully offline after a single online visit.
+if (typeof window !== "undefined") {
+  registerSW({ immediate: true, onRegisteredSW() { /* ok */ }, onOfflineReady() { /* shell cached */ } });
 
-    const form = new FormData();
-    form.append("file", file);
-
-    const response = await fetch("/api/process", {
-      method: "POST",
-      body: form,
+  if ("serviceWorker" in navigator) {
+    let didReload = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (didReload) return;   // avoid the reload loop Chrome otherwise does on first activation
+      didReload = true;
+      window.location.reload();
     });
-
-    const data = await response.json();
-    setResult(data);
-    setLoading(false);
   }
-
-  return (
-    <main className="page">
-      <section className="card">
-        <div className="title">
-          <Upload size={28} />
-          <div>
-            <h1>Navvix CAD Processor</h1>
-            <p>Upload PDF or DXF. Multi-drawing DXFs are split and processed independently.</p>
-          </div>
-        </div>
-
-        <input type="file" accept=".pdf,.dxf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-
-        <button disabled={!file || loading} onClick={submit}>
-          {loading ? "Processing..." : "Process file"}
-        </button>
-
-        {result && <pre className="result">{JSON.stringify(result, null, 2)}</pre>}
-      </section>
-    </main>
-  );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+  <React.StrictMode><App /></React.StrictMode>
+);

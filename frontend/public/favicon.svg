@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Solarica favicon — the orange brand chevron extracted from the logo.
+  Drawn as an open V/peak with rounded ends so it stays crisp at every
+  size from 16×16 (browser tab) up to 256×256 (PWA install icon).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M10 52 L32 12 L54 52"
+        fill="none"
+        stroke="#f08c1a"
+        stroke-width="11"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>
