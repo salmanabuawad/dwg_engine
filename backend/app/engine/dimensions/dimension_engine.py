@@ -6,6 +6,11 @@ Do not dimension every raw line.
 Do not dimension full-sheet geometry.
 Do not use page frames/title borders as bbox source.
 Use architectural isolation first, then perimeter-first semantic spans.
+
+IMPORTANT SMALL-DRAWING RULE:
+If a split drawing is a small room/storage/block, it still must receive local
+width and height dimensions. Never skip a valid architectural cluster only
+because it is small.
 """
 
 from __future__ import annotations
@@ -24,7 +29,6 @@ def setup_dimstyle(doc: Any, style: str = "ISO-25") -> str:
         doc.dimstyles.new(style)
 
     ds = doc.dimstyles.get(style)
-
     settings = {
         "dimtxt": 18.0,
         "dimasz": 18.0,
@@ -36,7 +40,6 @@ def setup_dimstyle(doc: Any, style: str = "ISO-25") -> str:
         "dimexe": 1.25,
         "dimexo": 0.625,
     }
-
     for k, v in settings.items():
         try:
             setattr(ds.dxf, k, v)
@@ -67,10 +70,15 @@ def _line_to_edge(line: LineSegment) -> dict | None:
 def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, float], float, dict]:
     all_lines = [
         l for l in extract_lines_from_doc(doc)
-        if l.orientation in ("H", "V") and l.length >= 30
+        if l.orientation in ("H", "V") and l.length >= 12
     ]
 
     architectural_lines, isolation = isolate_architectural_lines(all_lines)
+
+    # Fallback: if isolation is too aggressive for tiny split drawings, keep all non-frame lines.
+    if not architectural_lines and all_lines:
+        architectural_lines = all_lines
+        isolation["fallback_used"] = "all_lines_for_small_split"
 
     if not architectural_lines:
         return [], (0, 0, 1, 1), 1, isolation
@@ -93,26 +101,26 @@ def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, flo
     if not raw:
         return [], (0, 0, 1, 1), 1, isolation
 
-    # Use architectural bbox only, not sheet/page bbox.
     xlo, xhi = np.percentile(xs, [1, 99])
     ylo, yhi = np.percentile(ys, [1, 99])
     width, height = max(1.0, xhi - xlo), max(1.0, yhi - ylo)
     base = max(1.0, min(width, height))
 
-    snap = max(8.0, base * 0.003)
+    snap = max(4.0, base * 0.0025)
 
     def sv(v: float) -> float:
         return round(v / snap) * snap
 
     dedup = {}
 
+    # For small split drawings, thresholds must be relaxed.
+    min_len = max(20.0, base * 0.012)
+
     for e in raw:
-        # Remove tiny connector/letter/table lines.
-        if e["len"] < max(90.0, base * 0.030):
+        if e["len"] < min_len:
             continue
 
         key = (e["ori"], sv(e["c"]), sv(e["a"]), sv(e["b"]))
-
         if key not in dedup or e["len"] > dedup[key]["len"]:
             dedup[key] = {
                 "ori": e["ori"],
@@ -124,47 +132,52 @@ def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, flo
 
     edges = list(dedup.values())
 
-    # Reject extremely dominant frame-like spans inside the architectural bbox.
-    # Real overall dimension is generated separately, so raw huge spans do not need duplication.
-    edges = [
-        e for e in edges
-        if not (
-            (e["ori"] == "H" and e["len"] > width * 0.92)
-            or (e["ori"] == "V" and e["len"] > height * 0.92)
-        )
-    ]
-
-    per_band = max(100.0, base * 0.055)
+    # Keep local meaningful spans. Do not require large percentages only.
+    per_band = max(35.0, base * 0.080)
     selected = []
 
     for e in edges:
         if e["ori"] == "H":
             near_perimeter = abs(e["c"] - yhi) <= per_band or abs(e["c"] - ylo) <= per_band
-            major_span = e["len"] > width * 0.28
-            if near_perimeter or major_span:
+            local_span = e["len"] > width * 0.18 or e["len"] > base * 0.22
+            if near_perimeter or local_span:
                 selected.append(e)
         else:
             near_perimeter = abs(e["c"] - xhi) <= per_band or abs(e["c"] - xlo) <= per_band
-            major_span = e["len"] > height * 0.28
-            if near_perimeter or major_span:
+            local_span = e["len"] > height * 0.18 or e["len"] > base * 0.22
+            if near_perimeter or local_span:
                 selected.append(e)
 
-    # Clutter guard.
-    selected = sorted(selected, key=lambda e: e["len"], reverse=True)[:28]
+    selected = sorted(selected, key=lambda e: e["len"], reverse=True)[:32]
 
     isolation["raw_edges"] = len(raw)
     isolation["dedup_edges"] = len(dedup)
     isolation["selected_edges"] = len(selected)
+    isolation["small_drawing_rule"] = True
 
     return selected, (float(xlo), float(ylo), float(xhi), float(yhi)), float(base), isolation
+
+
+def _add_dim(msp, style, layer, base, p1, p2, angle) -> bool:
+    try:
+        dim = msp.add_linear_dim(
+            base=base,
+            p1=p1,
+            p2=p2,
+            angle=angle,
+            dimstyle=style,
+            dxfattribs={"layer": layer},
+        )
+        dim.render()
+        return True
+    except Exception:
+        return False
 
 
 def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
     doc = ezdxf.readfile(str(input_dxf))
     msp = doc.modelspace()
 
-    # Remove old dimensions from each split. This prevents copied original dimensions
-    # and generated dimensions from compounding.
     for e in list(msp):
         if e.dxftype() == "DIMENSION":
             try:
@@ -173,7 +186,6 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
                 pass
 
     style = setup_dimstyle(doc)
-
     layer = "NAVVIX_DIMENSIONS"
     if layer not in doc.layers:
         doc.layers.new(layer, dxfattribs={"color": 7})
@@ -181,70 +193,54 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
     edges, bbox, base, isolation = semantic_edges(doc)
     xlo, ylo, xhi, yhi = bbox
 
+    width = xhi - xlo
+    height = yhi - ylo
     created = 0
-    off1 = max(45.0, base * 0.030)
-    off2 = max(85.0, base * 0.060)
+    off1 = max(28.0, base * 0.045)
+    off2 = max(48.0, base * 0.075)
 
-    # Overall dimensions generated from architectural bbox only.
-    if edges or isolation.get("architectural_lines", 0) > 0:
-        try:
-            dim = msp.add_linear_dim(
-                base=((xlo + xhi) / 2, yhi + off2),
-                p1=(xlo, yhi),
-                p2=(xhi, yhi),
-                angle=0,
-                dimstyle=style,
-                dxfattribs={"layer": layer},
-            )
-            dim.render()
+    has_architecture = isolation.get("architectural_lines", 0) > 0 or isolation.get("input_lines", 0) > 0
+
+    # Always add local bbox width/height for any valid split drawing.
+    # This fixes isolated storage/room blocks that were previously not dimensioned.
+    if has_architecture and width > 1 and height > 1:
+        if _add_dim(
+            msp,
+            style,
+            layer,
+            base=((xlo + xhi) / 2, yhi + off2),
+            p1=(xlo, yhi),
+            p2=(xhi, yhi),
+            angle=0,
+        ):
             created += 1
-        except Exception:
-            pass
 
-        try:
-            dim = msp.add_linear_dim(
-                base=(xlo - off2, (ylo + yhi) / 2),
-                p1=(xlo, ylo),
-                p2=(xlo, yhi),
-                angle=90,
-                dimstyle=style,
-                dxfattribs={"layer": layer},
-            )
-            dim.render()
+        if _add_dim(
+            msp,
+            style,
+            layer,
+            base=(xlo - off2, (ylo + yhi) / 2),
+            p1=(xlo, ylo),
+            p2=(xlo, yhi),
+            angle=90,
+        ):
             created += 1
-        except Exception:
-            pass
 
+    # Add selected local spans for inner blocks.
     for i, e in enumerate(edges):
         try:
             if e["ori"] == "H":
                 a, b, c = e["a"], e["b"], e["c"]
                 side = 1 if c >= (ylo + yhi) / 2 else -1
                 basept = ((a + b) / 2, c + side * off1 * (1 + (i % 2) * 0.55))
-                dim = msp.add_linear_dim(
-                    base=basept,
-                    p1=(a, c),
-                    p2=(b, c),
-                    angle=0,
-                    dimstyle=style,
-                    dxfattribs={"layer": layer},
-                )
-                dim.render()
-                created += 1
+                if _add_dim(msp, style, layer, base=basept, p1=(a, c), p2=(b, c), angle=0):
+                    created += 1
             else:
                 a, b, c = e["a"], e["b"], e["c"]
                 side = 1 if c >= (xlo + xhi) / 2 else -1
                 basept = (c + side * off1 * (1 + (i % 2) * 0.55), (a + b) / 2)
-                dim = msp.add_linear_dim(
-                    base=basept,
-                    p1=(c, a),
-                    p2=(c, b),
-                    angle=90,
-                    dimstyle=style,
-                    dxfattribs={"layer": layer},
-                )
-                dim.render()
-                created += 1
+                if _add_dim(msp, style, layer, base=basept, p1=(c, a), p2=(c, b), angle=90):
+                    created += 1
         except Exception:
             pass
 
@@ -258,5 +254,5 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
         "selected_spans": len(edges),
         "bbox": bbox,
         "isolation": isolation,
-        "note": "Dimensions are generated from isolated architectural geometry only, not page frame/title border.",
+        "note": "Small valid split drawings now receive local width/height dimensions.",
     }
