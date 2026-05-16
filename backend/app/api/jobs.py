@@ -44,10 +44,12 @@ def remove_job(job_id: str, db: Session = Depends(get_db)):
     return None
 
 
-def _file_or_404(path: str | None, filename: str) -> FileResponse:
+def _file_or_404(path: str | None, filename: str, *, inline: bool = False, media_type: str | None = None) -> FileResponse:
     if not path or not Path(path).exists():
         raise HTTPException(404, "File not ready")
-    return FileResponse(path, filename=filename)
+    disposition = "inline" if inline else "attachment"
+    headers = {"Content-Disposition": f'{disposition}; filename="{filename}"'}
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @router.get("/{job_id}/pdf")
@@ -55,7 +57,15 @@ def get_pdf(job_id: str, db: Session = Depends(get_db)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    return _file_or_404(job.preview_pdf_path, f"{job_id}.pdf")
+    return _file_or_404(job.preview_pdf_path, f"{job_id}.pdf", inline=True, media_type="application/pdf")
+
+
+@router.get("/{job_id}/pdf/download")
+def download_pdf(job_id: str, db: Session = Depends(get_db)):
+    job = db.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return _file_or_404(job.preview_pdf_path, f"{job_id}.pdf", inline=False, media_type="application/pdf")
 
 
 @router.get("/{job_id}/png")
@@ -63,7 +73,7 @@ def get_png(job_id: str, db: Session = Depends(get_db)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    return _file_or_404(job.preview_png_path, f"{job_id}.png")
+    return _file_or_404(job.preview_png_path, f"{job_id}.png", inline=True, media_type="image/png")
 
 
 @router.get("/{job_id}/dxf")
@@ -71,4 +81,4 @@ def get_dxf(job_id: str, db: Session = Depends(get_db)):
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    return _file_or_404(job.output_dxf_path, f"{job_id}_dimensioned.dxf")
+    return _file_or_404(job.output_dxf_path, f"{job_id}_dimensioned.dxf", media_type="application/octet-stream")

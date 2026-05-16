@@ -37,6 +37,9 @@ export const api = {
   pdfUrl(id: string): string {
     return `/api/jobs/${id}/pdf`;
   },
+  pdfDownloadUrl(id: string): string {
+    return `/api/jobs/${id}/pdf/download`;
+  },
   pngUrl(id: string): string {
     return `/api/jobs/${id}/png`;
   },

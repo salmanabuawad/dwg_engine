@@ -25,18 +25,15 @@ export function JobList({ jobs, selectedId, onSelect, onDelete }: Props) {
               <div className="mt-1 text-xs text-slate-500">{job.status}</div>
               {job.status === 'done' && (
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <a
-                    href={api.pdfUrl(job.id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onSelect(job); }}
                     className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-xs text-white hover:bg-blue-700"
-                    onClick={(e) => e.stopPropagation()}
                   >
                     <Eye className="h-3 w-3" /> Preview
-                  </a>
+                  </button>
                   <a
-                    href={api.pdfUrl(job.id)}
-                    download
+                    href={api.pdfDownloadUrl(job.id)}
                     className="inline-flex items-center gap-1 rounded bg-slate-900 px-2 py-1 text-xs text-white hover:bg-slate-800"
                     onClick={(e) => e.stopPropagation()}
                   >
@@ -44,7 +41,6 @@ export function JobList({ jobs, selectedId, onSelect, onDelete }: Props) {
                   </a>
                   <a
                     href={api.dxfUrl(job.id)}
-                    download
                     className="inline-flex items-center gap-1 rounded bg-slate-200 px-2 py-1 text-xs text-slate-800 hover:bg-slate-300"
                     onClick={(e) => e.stopPropagation()}
                   >
