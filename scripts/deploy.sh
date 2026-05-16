@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy dwg-engine (backend/app/ + Postgres) to dwg-engine.wavelync.com.
+# Deploy dwg-engine (backend/app/ + Postgres) to dwg.wavelync.com.
 # Mirrors the navvix profile but targets a separate domain, port, systemd
 # unit, install dir, and database so it cannot collide with the navvix
 # production deployment on the same host.
@@ -9,7 +9,7 @@ REMOTE_HOST="185.229.226.37"
 REMOTE_USER="root"
 SSH_KEY="$HOME/.ssh/id_ed25519"
 APP_DIR="/opt/dwg-engine"
-DOMAIN="dwg-engine.wavelync.com"
+DOMAIN="dwg.wavelync.com"
 PORT=8021
 SERVICE="dwg-engine-backend"
 DB_NAME="dwg_engine"

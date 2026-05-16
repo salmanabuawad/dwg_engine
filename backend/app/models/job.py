@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text
 from app.database import Base
 
 
@@ -13,6 +13,8 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(String(64), primary_key=True)
+    parent_job_id = Column(String(64), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=True, index=True)
+    drawing_index = Column(Integer, nullable=True)
     filename = Column(String(512), nullable=False)
     status = Column(String(32), nullable=False, default="pending")
     size_bytes = Column(Integer, nullable=False, default=0)
