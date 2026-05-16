@@ -163,9 +163,41 @@ def split_dxf(input_dxf: Path, output_dir: Path) -> dict:
     gx1, gy1, gx2, gy2 = global_bbox
     gw, gh = gx2 - gx1, gy2 - gy1
 
+    # Strict partition: every (non-frame) entity goes to EXACTLY ONE drawing.
+    # Records that are members of a kept cluster go to that cluster. Records
+    # that fell out of clustering (or into a rejected micro-cluster) are
+    # assigned to the kept cluster whose center is nearest. This stops
+    # drawing-1's bbox from sweeping up the entire sheet.
+    n_records = len(records)
+    n_clusters = len(clusters)
+    ownership = [-1] * n_records  # record index -> kept-cluster index (0..n_clusters-1)
+
+    for ki, cluster in enumerate(clusters):
+        for idx in cluster["indices"]:
+            ownership[idx] = ki
+
+    if n_clusters > 0:
+        cluster_centers = np.array([
+            ((c["bbox"][0] + c["bbox"][2]) / 2.0, (c["bbox"][1] + c["bbox"][3]) / 2.0)
+            for c in clusters
+        ], dtype=float)
+        for i, r in enumerate(records):
+            if ownership[i] != -1:
+                continue
+            # Frame / title-block sized entities never get assigned.
+            if r["w"] > gw * 0.60 or r["h"] > gh * 0.60:
+                continue
+            d = np.sqrt(((cluster_centers - np.array(r["center"], dtype=float)) ** 2).sum(axis=1))
+            ownership[i] = int(np.argmin(d))
+
+    buckets: list[list[int]] = [[] for _ in clusters]
+    for i, owner in enumerate(ownership):
+        if owner >= 0:
+            buckets[owner].append(i)
+
     drawings = []
 
-    for n, cluster in enumerate(clusters, start=1):
+    for n, (cluster, member_idxs) in enumerate(zip(clusters, buckets), start=1):
         b = cluster["bbox"]
         pad = max(b[2] - b[0], b[3] - b[1]) * 0.08
         expanded = (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
@@ -176,16 +208,13 @@ def split_dxf(input_dxf: Path, output_dir: Path) -> dict:
         nmsp = ndoc.modelspace()
         copied = 0
 
-        for r in records:
-            if intersects(r["bbox"], expanded):
-                # Avoid carrying full-page/title-frame entities into individual drawings.
-                if r["w"] > gw * 0.60 or r["h"] > gh * 0.60:
-                    continue
-                try:
-                    nmsp.add_entity(r["entity"].copy())
-                    copied += 1
-                except Exception:
-                    pass
+        for idx in member_idxs:
+            r = records[idx]
+            try:
+                nmsp.add_entity(r["entity"].copy())
+                copied += 1
+            except Exception:
+                pass
 
         file_path = output_dir / f"drawing_{n:02d}.dxf"
         ndoc.saveas(str(file_path))
