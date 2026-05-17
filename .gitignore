@@ -13,3 +13,5 @@ server_files/outputs/
 # Reference / training material — kept locally for inspection,
 # too large + project-specific to live in version control.
 learning/
+# Local code-export snapshot — not source of truth.
+code.zip

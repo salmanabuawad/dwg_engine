@@ -44,3 +44,21 @@ Main protection module:
 `app.engine.isolation.main_plan_isolation`
 
 Do not remove it.
+
+## Topology foundation added
+
+Do not regress from topology back to bbox/region dimensioning.
+
+New mandatory modules:
+- app.engine.topology.snap
+- app.engine.topology.node_graph
+- app.engine.topology.wall_chain
+- app.engine.validation.dimension_validator
+
+Dimension engine must use WallChain objects as the main source of dimension candidates.
+
+Forbidden:
+- dimensioning merged region interiors
+- dimensions from arbitrary connected components
+- dimensions from room blobs
+- giant values from bbox spans like 15674 / 13141 / 8412
