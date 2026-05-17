@@ -9,7 +9,7 @@ from app.engine.pipeline.pdf_handler import process_pdf
 from app.engine.rendering.preview_renderer import render_dxf_preview
 from app.engine.splitter.drawing_splitter import split_dxf
 
-def process_dxf(input_path: Path, output_dir: Path, *, dim_color: str | None = None) -> dict:
+def process_dxf(input_path: Path, output_dir: Path, *, dim_color: str | None = None, arrow_direction: str | None = None) -> dict:
     split_dir = output_dir / "01_split_drawings"
     dim_dir = output_dir / "02_dimensioned_drawings"
     preview_dir = output_dir / "03_previews"
@@ -30,7 +30,7 @@ def process_dxf(input_path: Path, output_dir: Path, *, dim_color: str | None = N
 
         png = preview_dir / f"drawing_{n:02d}_dimensioned_preview.png"
         pdf = preview_dir / f"drawing_{n:02d}_dimensioned_preview.pdf"
-        render_ok = render_dxf_preview(dimensioned_path, png, pdf, dim_color=dim_color)
+        render_ok = render_dxf_preview(dimensioned_path, png, pdf, dim_color=dim_color, arrow_direction=arrow_direction)
 
         drawings.append({
             **drawing,
@@ -65,12 +65,12 @@ def process_dxf(input_path: Path, output_dir: Path, *, dim_color: str | None = N
     result["zip"] = str(zip_path)
     return result
 
-def process_uploaded_file(input_path: Path, output_dir: Path, *, dim_color: str | None = None) -> dict:
+def process_uploaded_file(input_path: Path, output_dir: Path, *, dim_color: str | None = None, arrow_direction: str | None = None) -> dict:
     suffix = input_path.suffix.lower()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if suffix == ".dxf":
-        return process_dxf(input_path, output_dir, dim_color=dim_color)
+        return process_dxf(input_path, output_dir, dim_color=dim_color, arrow_direction=arrow_direction)
 
     if suffix == ".pdf":
         result = process_pdf(input_path, output_dir)

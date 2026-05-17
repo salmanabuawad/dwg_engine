@@ -29,6 +29,10 @@ class Job(Base):
     preview_pdf_path = Column(String(1024), nullable=True)
     preview_png_path = Column(String(1024), nullable=True)
 
-    # Per-job rendering preferences. dim_color must be a 7-char hex string
-    # (#RRGGBB). When null, the renderer falls back to its module default.
+    # Per-job rendering preferences (snapshot of what was used when the
+    # job ran). dim_color must be a 7-char hex string (#RRGGBB).
+    # arrow_direction is "in" (arrowheads point toward the dimension
+    # centre) or "out" (arrowheads point outward, architectural style).
+    # When null, the renderer falls back to its module defaults.
     dim_color = Column(String(7), nullable=True)
+    arrow_direction = Column(String(8), nullable=True)

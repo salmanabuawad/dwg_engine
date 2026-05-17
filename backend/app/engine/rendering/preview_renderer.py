@@ -58,9 +58,23 @@ def _architectural_preview_bbox(doc):
     return (0, 0, 1, 1), []
 
 
+DEFAULT_ARROW_DIRECTION = "in"
+
+
+def _valid_arrow_direction(value: str | None) -> str:
+    if isinstance(value, str) and value.strip().lower() in ("in", "out"):
+        return value.strip().lower()
+    return DEFAULT_ARROW_DIRECTION
+
+
 def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None = None,
-                       *, dim_color: str | None = None) -> bool:
+                       *, dim_color: str | None = None,
+                       arrow_direction: str | None = None) -> bool:
     dim_color = _valid_hex_color(dim_color)
+    arrow_direction = _valid_arrow_direction(arrow_direction)
+    # "in":  arrowheads point toward each other across the dimension line
+    # "out": arrowheads flip and point outward (architectural tick style)
+    arrow_flip = -1 if arrow_direction == "out" else 1
     doc = ezdxf.readfile(str(dxf_path))
     msp = doc.modelspace()
     segs = []
@@ -194,16 +208,16 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
             ax.plot([p1[0], p2[0]], [bp[1], bp[1]], color=dim_color, linewidth=0.30)
             ax.plot([p1[0], p1[0]], [p1[1], bp[1]], color=dim_color, linewidth=0.18)
             ax.plot([p2[0], p2[0]], [p2[1], bp[1]], color=dim_color, linewidth=0.18)
-            draw_arrow((p1[0], bp[1]), (1, 0), arrow_size)
-            draw_arrow((p2[0], bp[1]), (-1, 0), arrow_size)
+            draw_arrow((p1[0], bp[1]), (arrow_flip * 1, 0), arrow_size)
+            draw_arrow((p2[0], bp[1]), (arrow_flip * -1, 0), arrow_size)
             side = 1 if bp[1] >= (ylo + yhi) / 2 else -1
             ax.text((p1[0] + p2[0]) / 2, bp[1] + side * text_offset, str(int(round(d["length"]))), fontsize=4.5, ha="center", va="center", color=dim_color)
         else:
             ax.plot([bp[0], bp[0]], [p1[1], p2[1]], color=dim_color, linewidth=0.30)
             ax.plot([p1[0], bp[0]], [p1[1], p1[1]], color=dim_color, linewidth=0.18)
             ax.plot([p2[0], bp[0]], [p2[1], p2[1]], color=dim_color, linewidth=0.18)
-            draw_arrow((bp[0], p1[1]), (0, 1), arrow_size)
-            draw_arrow((bp[0], p2[1]), (0, -1), arrow_size)
+            draw_arrow((bp[0], p1[1]), (0, arrow_flip * 1), arrow_size)
+            draw_arrow((bp[0], p2[1]), (0, arrow_flip * -1), arrow_size)
             side = 1 if bp[0] >= (xlo + xhi) / 2 else -1
             ax.text(bp[0] + side * text_offset, (p1[1] + p2[1]) / 2, str(int(round(d["length"]))), fontsize=4.5, rotation=90, ha="center", va="center", color=dim_color)
 

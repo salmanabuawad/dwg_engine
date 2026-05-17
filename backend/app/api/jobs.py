@@ -20,10 +20,11 @@ async def upload_job(
     file: UploadFile,
     background_tasks: BackgroundTasks,
     dim_color: str | None = Form(default=None),
+    arrow_direction: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
     try:
-        job = await create_job(db, file, dim_color=dim_color)
+        job = await create_job(db, file, dim_color=dim_color, arrow_direction=arrow_direction)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     background_tasks.add_task(process_job, SessionLocal, job.id)

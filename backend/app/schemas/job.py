@@ -17,3 +17,4 @@ class JobOut(BaseModel):
     started_at: datetime | None = None
     done_at: datetime | None = None
     dim_color: str | None = None
+    arrow_direction: str | None = None

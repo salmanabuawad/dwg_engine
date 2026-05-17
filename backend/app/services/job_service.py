@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.engine.pipeline.processor import process_uploaded_file
 from app.models import Job
 from app.services.storage import job_dir
+from app.services.settings_service import get_all_settings
 
 ALLOWED_EXTENSIONS = {".dxf", ".pdf"}
 
@@ -31,10 +32,23 @@ def _normalize_dim_color(value: str | None) -> str | None:
         return None
     if not all(c in "0123456789abcdefABCDEF" for c in s[1:]):
         return None
-    return s
+    return s.lower()
 
 
-async def create_job(db: Session, file: UploadFile, *, dim_color: str | None = None) -> Job:
+def _normalize_arrow_direction(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    s = value.strip().lower()
+    return s if s in ("in", "out") else None
+
+
+async def create_job(
+    db: Session,
+    file: UploadFile,
+    *,
+    dim_color: str | None = None,
+    arrow_direction: str | None = None,
+) -> Job:
     filename = file.filename or "input.dxf"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -46,13 +60,19 @@ async def create_job(db: Session, file: UploadFile, *, dim_color: str | None = N
     data = await file.read()
     input_path.write_bytes(data)
 
+    # Resolve render prefs: per-job override > app_settings > renderer default.
+    settings = get_all_settings(db)
+    resolved_color = _normalize_dim_color(dim_color) or settings.get("dim_color")
+    resolved_arrow = _normalize_arrow_direction(arrow_direction) or settings.get("arrow_direction")
+
     job = Job(
         id=job_id,
         filename=filename,
         status="pending",
         size_bytes=len(data),
         input_path=str(input_path),
-        dim_color=_normalize_dim_color(dim_color),
+        dim_color=resolved_color,
+        arrow_direction=resolved_arrow,
     )
     db.add(job)
     db.commit()
@@ -89,7 +109,11 @@ def process_job(db_factory, job_id: str) -> None:
         db.commit()
 
         directory = job_dir(job_id)
-        report = process_uploaded_file(Path(job.input_path), directory, dim_color=job.dim_color)
+        report = process_uploaded_file(
+            Path(job.input_path), directory,
+            dim_color=job.dim_color,
+            arrow_direction=job.arrow_direction,
+        )
         drawings = report.get("drawings") or []
         finished_at = utcnow()
 
@@ -130,6 +154,7 @@ def process_job(db_factory, job_id: str) -> None:
                 started_at=job.started_at,
                 done_at=finished_at,
                 dim_color=job.dim_color,
+                arrow_direction=job.arrow_direction,
                 report={"drawing": d, "parent_report_id": job.id},
             )
             db.add(child)

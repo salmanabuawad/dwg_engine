@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.jobs import router as jobs_router
+from app.api.app_settings import router as app_settings_router
 from app.auth import router as auth_router, ensure_users_schema
 from app.database import Base, engine
 import app.models  # noqa: F401  — register ORM models with Base before create_all
@@ -34,4 +35,5 @@ def health():
 
 
 app.include_router(jobs_router, prefix="/api")
+app.include_router(app_settings_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")

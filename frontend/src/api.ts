@@ -23,12 +23,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface AppSettings {
+  dim_color: string;
+  arrow_direction: 'in' | 'out';
+}
+
 export const api = {
-  upload(file: File, opts?: { dimColor?: string }): Promise<Job> {
+  upload(file: File): Promise<Job> {
+    // Per-job overrides are no longer sent from the UI; the backend
+    // resolves the current app_settings row at upload time and snapshots
+    // the values onto the job. To override per upload, the API still
+    // accepts dim_color / arrow_direction form fields.
     const fd = new FormData();
     fd.append('file', file);
-    if (opts?.dimColor) fd.append('dim_color', opts.dimColor);
     return request<Job>('/jobs', { method: 'POST', body: fd });
+  },
+  getSettings(): Promise<AppSettings> {
+    return request<AppSettings>('/settings');
+  },
+  updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    return request<AppSettings>('/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
   },
   listJobs(): Promise<Job[]> {
     return request<Job[]>('/jobs');
