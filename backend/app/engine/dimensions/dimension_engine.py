@@ -312,55 +312,153 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
 
     has_architecture = isolation.get("architectural_lines", 0) > 0 or isolation.get("input_lines", 0) > 0
 
-    chain_segments = 0
-    if has_architecture and width > 1 and height > 1:
-        # === Outer spans on all four sides ============================
-        # Mirrors the reference dimensioning style: outer-span (full façade
-        # width/height) sits OUTSIDE the inner chain, on every side.
-        if _add_dim(msp, style, layer, base=((xlo + xhi) / 2, yhi + off2),
-                    p1=(xlo, yhi), p2=(xhi, yhi), angle=0):
-            created += 1
-        if _add_dim(msp, style, layer, base=((xlo + xhi) / 2, ylo - off2),
-                    p1=(xlo, ylo), p2=(xhi, ylo), angle=0):
-            created += 1
-        if _add_dim(msp, style, layer, base=(xlo - off2, (ylo + yhi) / 2),
-                    p1=(xlo, ylo), p2=(xlo, yhi), angle=90):
-            created += 1
-        if _add_dim(msp, style, layer, base=(xhi + off2, (ylo + yhi) / 2),
-                    p1=(xhi, ylo), p2=(xhi, yhi), angle=90):
-            created += 1
+    # === Dimensions come ONLY from actual wall chains ===================
+    # NO bbox-spanning dimensions. NO "from leftmost-touching-wall to
+    # rightmost-touching-wall" measurements across room interiors.
+    # Every dimension that ends up on the drawing must run along ONE
+    # real wall chain — its length is chain.b - chain.a, never
+    # something larger.
+    #
+    # A wall chain is on the outer perimeter for a side when its
+    # perpendicular coordinate is in the outermost band of its
+    # orientation:
+    #   - top:    H walls whose c is within band_h of max(H walls' c)
+    #   - bottom: H walls whose c is within band_h of min(H walls' c)
+    #   - left:   V walls whose c is within band_v of min(V walls' c)
+    #   - right:  V walls whose c is within band_v of max(V walls' c)
+    # The band lets multi-step perimeters (L-shape, courtyards) keep
+    # multiple parallel walls as "perimeter" instead of dropping all
+    # but the absolute outermost.
+    perimeter_walls = 0
+    interior_skipped = 0
+    rejected_spans = 0
 
-        # === Inner chains (segment-by-segment) on all four sides =======
-        # Per-side breakpoints from the wall topology — only walls that
-        # actually REACH each perimeter contribute breaks to that side's
-        # chain. Interior partitions are reserved for cross-dimensions
-        # (a future iteration), matching the reference style where each
-        # side's chain corresponds to its visible wall positions.
-        touch_tol = max(snap * 4.0, base * 0.015)
-        top_breaks    = _perimeter_chain_breaks(wall_chains, bbox, "top",    snap, touch_tol)
-        bottom_breaks = _perimeter_chain_breaks(wall_chains, bbox, "bottom", snap, touch_tol)
-        left_breaks   = _perimeter_chain_breaks(wall_chains, bbox, "left",   snap, touch_tol)
-        right_breaks  = _perimeter_chain_breaks(wall_chains, bbox, "right",  snap, touch_tol)
+    h_chains = [c for c in wall_chains if c.orientation == "H"]
+    v_chains = [c for c in wall_chains if c.orientation == "V"]
+    if h_chains and v_chains and has_architecture:
+        h_cs = [c.c for c in h_chains]
+        v_cs = [c.c for c in v_chains]
+        h_ymax = max(h_cs); h_ymin = min(h_cs)
+        v_xmin = min(v_cs); v_xmax = max(v_cs)
+        # Outer-perimeter band tolerance — generous enough for L-shapes
+        # but tight enough that mid-building walls are excluded.
+        band_h = max(snap * 4.0, (h_ymax - h_ymin) * 0.03)
+        band_v = max(snap * 4.0, (v_xmax - v_xmin) * 0.03)
 
-        if len(top_breaks) >= 3:
-            chain_segments += _emit_chain(msp, style, layer, top_breaks,
-                                          base_perp=yhi + off1, attach_perp=yhi,
-                                          axis="H", min_len=min_chain_len)
-        if len(bottom_breaks) >= 3:
-            chain_segments += _emit_chain(msp, style, layer, bottom_breaks,
-                                          base_perp=ylo - off1, attach_perp=ylo,
-                                          axis="H", min_len=min_chain_len)
-        if len(left_breaks) >= 3:
-            chain_segments += _emit_chain(msp, style, layer, left_breaks,
-                                          base_perp=xlo - off1, attach_perp=xlo,
-                                          axis="V", min_len=min_chain_len)
-        if len(right_breaks) >= 3:
-            chain_segments += _emit_chain(msp, style, layer, right_breaks,
-                                          base_perp=xhi + off1, attach_perp=xhi,
-                                          axis="V", min_len=min_chain_len)
-        created += chain_segments
+        # Sanity ceiling for any single dimension: 1.5× the longest
+        # real wall chain on its orientation. Anything larger would
+        # span beyond the actual geometry it claims to measure and is
+        # rejected outright (semantic validation per the roadmap).
+        max_h_len = max((c.length for c in h_chains), default=0.0)
+        max_v_len = max((c.length for c in v_chains), default=0.0)
+        h_ceiling = max_h_len * 1.5 if max_h_len else float("inf")
+        v_ceiling = max_v_len * 1.5 if max_v_len else float("inf")
 
-    isolation["chain_segments"] = chain_segments
+        def _emit_wall_chain(ch: WallChain, side: str) -> int:
+            """Emit dimensions along ONE wall chain. The full chain
+            length is one dim on the side-appropriate offset. If the
+            chain has bridged openings (sub-door-width gaps), each
+            non-opening sub-segment AND each opening also become their
+            own dimensions on a slightly more-outer row so the chain
+            reads as: wall | opening | wall.
+            """
+            n = 0
+            ceiling = h_ceiling if ch.orientation == "H" else v_ceiling
+            if ch.length > ceiling:
+                # Defensive: a chain longer than 1.5× the longest wall
+                # in its orientation cannot be a real wall.
+                return 0
+
+            if side == "top":
+                base_total = (ch.a + ch.b) / 2.0, ch.c + off2
+                base_seg = ch.c + off1
+                p1_attach, p2_attach = ch.c, ch.c
+                angle = 0
+            elif side == "bottom":
+                base_total = (ch.a + ch.b) / 2.0, ch.c - off2
+                base_seg = ch.c - off1
+                p1_attach, p2_attach = ch.c, ch.c
+                angle = 0
+            elif side == "left":
+                base_total = ch.c - off2, (ch.a + ch.b) / 2.0
+                base_seg = ch.c - off1
+                angle = 90
+            else:  # "right"
+                base_total = ch.c + off2, (ch.a + ch.b) / 2.0
+                base_seg = ch.c + off1
+                angle = 90
+
+            # Overall chain dimension (the chain's own length — never
+            # larger than the real wall it represents).
+            if angle == 0:
+                ok_total = _add_dim(msp, style, layer, base=base_total,
+                                    p1=(ch.a, ch.c), p2=(ch.b, ch.c), angle=0)
+            else:
+                ok_total = _add_dim(msp, style, layer, base=base_total,
+                                    p1=(ch.c, ch.a), p2=(ch.c, ch.b), angle=90)
+            if ok_total:
+                n += 1
+
+            # Sub-segments split by any openings within the chain.
+            if ch.openings:
+                breaks = sorted({ch.a, ch.b}.union(
+                    pt for (oa, ob) in ch.openings for pt in (oa, ob)
+                ))
+                for i in range(len(breaks) - 1):
+                    a, b = breaks[i], breaks[i + 1]
+                    if b - a < min_chain_len:
+                        continue
+                    if angle == 0:
+                        ok = _add_dim(msp, style, layer,
+                                      base=((a + b) / 2.0, base_seg),
+                                      p1=(a, ch.c), p2=(b, ch.c), angle=0)
+                    else:
+                        ok = _add_dim(msp, style, layer,
+                                      base=(base_seg, (a + b) / 2.0),
+                                      p1=(ch.c, a), p2=(ch.c, b), angle=90)
+                    if ok:
+                        n += 1
+            return n
+
+        for ch in h_chains:
+            if abs(ch.c - h_ymax) <= band_h:
+                emitted = _emit_wall_chain(ch, "top")
+                if emitted:
+                    perimeter_walls += 1
+                    created += emitted
+                else:
+                    rejected_spans += 1
+            elif abs(ch.c - h_ymin) <= band_h:
+                emitted = _emit_wall_chain(ch, "bottom")
+                if emitted:
+                    perimeter_walls += 1
+                    created += emitted
+                else:
+                    rejected_spans += 1
+            else:
+                interior_skipped += 1
+
+        for ch in v_chains:
+            if abs(ch.c - v_xmin) <= band_v:
+                emitted = _emit_wall_chain(ch, "left")
+                if emitted:
+                    perimeter_walls += 1
+                    created += emitted
+                else:
+                    rejected_spans += 1
+            elif abs(ch.c - v_xmax) <= band_v:
+                emitted = _emit_wall_chain(ch, "right")
+                if emitted:
+                    perimeter_walls += 1
+                    created += emitted
+                else:
+                    rejected_spans += 1
+            else:
+                interior_skipped += 1
+
+    isolation["perimeter_walls_dimensioned"] = perimeter_walls
+    isolation["interior_walls_skipped"] = interior_skipped
+    isolation["dimensions_rejected_over_ceiling"] = rejected_spans
 
     output_dxf.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(str(output_dxf))
