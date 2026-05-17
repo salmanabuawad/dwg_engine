@@ -174,6 +174,65 @@ def _add_dim(msp, style, layer, base, p1, p2, angle) -> bool:
         return False
 
 
+def _perimeter_breaks(edges: list[dict], orientation: str, lo: float, hi: float, snap: float) -> list[float]:
+    """Collect unique positions of edges in the given orientation, snapped and
+    bounded to [lo, hi]. Used to build the inner chain breakpoints: every wall
+    position along the chain axis becomes a segment boundary.
+
+    For 'V' edges the position is the edge's X centerline (each vertical wall
+    contributes one X break to the horizontal chain on top/bottom). For 'H'
+    edges the position is the Y centerline.
+    """
+    positions = set()
+    for e in edges:
+        if e["ori"] != orientation:
+            continue
+        pos = round(e["c"] / snap) * snap
+        if lo - snap <= pos <= hi + snap:
+            positions.add(pos)
+    # Always anchor the chain at the bbox endpoints so the chain spans the full
+    # façade even when no interior wall sits at the corner.
+    positions.add(lo)
+    positions.add(hi)
+    return sorted(positions)
+
+
+def _emit_chain(msp, style, layer, breaks: list[float], base_perp: float, attach_perp: float,
+                axis: str, min_len: float) -> int:
+    """Emit one chain row. `breaks` is the sorted list of positions along the
+    chain's main axis. `base_perp` is the perpendicular coordinate where the
+    chain's dimension line sits. `attach_perp` is the building-edge coordinate
+    where extension lines start.
+
+    axis='H' → horizontal chain (top/bottom), breaks are X, base_perp/attach_perp are Y.
+    axis='V' → vertical chain (left/right),  breaks are Y, base_perp/attach_perp are X.
+    """
+    n = 0
+    for i in range(len(breaks) - 1):
+        a, b = breaks[i], breaks[i + 1]
+        if b - a < min_len:
+            continue
+        if axis == "H":
+            ok = _add_dim(
+                msp, style, layer,
+                base=((a + b) / 2.0, base_perp),
+                p1=(a, attach_perp),
+                p2=(b, attach_perp),
+                angle=0,
+            )
+        else:
+            ok = _add_dim(
+                msp, style, layer,
+                base=(base_perp, (a + b) / 2.0),
+                p1=(attach_perp, a),
+                p2=(attach_perp, b),
+                angle=90,
+            )
+        if ok:
+            n += 1
+    return n
+
+
 def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
     doc = ezdxf.readfile(str(input_dxf))
     msp = doc.modelspace()
@@ -196,53 +255,54 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
     width = xhi - xlo
     height = yhi - ylo
     created = 0
-    off1 = max(28.0, base * 0.045)
-    off2 = max(48.0, base * 0.075)
+    off1 = max(28.0, base * 0.045)   # inner chain offset from building edge
+    off2 = max(48.0, base * 0.075)   # outer span offset (one row beyond inner chain)
+    snap = max(4.0, base * 0.0025)
+    min_chain_len = max(20.0, base * 0.008)
 
     has_architecture = isolation.get("architectural_lines", 0) > 0 or isolation.get("input_lines", 0) > 0
 
-    # Always add local bbox width/height for any valid split drawing.
-    # This fixes isolated storage/room blocks that were previously not dimensioned.
+    chain_segments = 0
     if has_architecture and width > 1 and height > 1:
-        if _add_dim(
-            msp,
-            style,
-            layer,
-            base=((xlo + xhi) / 2, yhi + off2),
-            p1=(xlo, yhi),
-            p2=(xhi, yhi),
-            angle=0,
-        ):
+        # === Outer spans on all four sides ============================
+        # Mirrors the reference dimensioning style: outer-span (full façade
+        # width/height) sits OUTSIDE the inner chain, on every side.
+        if _add_dim(msp, style, layer, base=((xlo + xhi) / 2, yhi + off2),
+                    p1=(xlo, yhi), p2=(xhi, yhi), angle=0):
+            created += 1
+        if _add_dim(msp, style, layer, base=((xlo + xhi) / 2, ylo - off2),
+                    p1=(xlo, ylo), p2=(xhi, ylo), angle=0):
+            created += 1
+        if _add_dim(msp, style, layer, base=(xlo - off2, (ylo + yhi) / 2),
+                    p1=(xlo, ylo), p2=(xlo, yhi), angle=90):
+            created += 1
+        if _add_dim(msp, style, layer, base=(xhi + off2, (ylo + yhi) / 2),
+                    p1=(xhi, ylo), p2=(xhi, yhi), angle=90):
             created += 1
 
-        if _add_dim(
-            msp,
-            style,
-            layer,
-            base=(xlo - off2, (ylo + yhi) / 2),
-            p1=(xlo, ylo),
-            p2=(xlo, yhi),
-            angle=90,
-        ):
-            created += 1
+        # === Inner chains (segment-by-segment) on all four sides =======
+        # Each chain's segments share one base coordinate so they read as a
+        # row of ticked dimensions, matching the reference style.
+        x_breaks = _perimeter_breaks(edges, "V", xlo, xhi, snap)
+        y_breaks = _perimeter_breaks(edges, "H", ylo, yhi, snap)
 
-    # Add selected local spans for inner blocks.
-    for i, e in enumerate(edges):
-        try:
-            if e["ori"] == "H":
-                a, b, c = e["a"], e["b"], e["c"]
-                side = 1 if c >= (ylo + yhi) / 2 else -1
-                basept = ((a + b) / 2, c + side * off1 * (1 + (i % 2) * 0.55))
-                if _add_dim(msp, style, layer, base=basept, p1=(a, c), p2=(b, c), angle=0):
-                    created += 1
-            else:
-                a, b, c = e["a"], e["b"], e["c"]
-                side = 1 if c >= (xlo + xhi) / 2 else -1
-                basept = (c + side * off1 * (1 + (i % 2) * 0.55), (a + b) / 2)
-                if _add_dim(msp, style, layer, base=basept, p1=(c, a), p2=(c, b), angle=90):
-                    created += 1
-        except Exception:
-            pass
+        if len(x_breaks) >= 3:
+            chain_segments += _emit_chain(msp, style, layer, x_breaks,
+                                          base_perp=yhi + off1, attach_perp=yhi,
+                                          axis="H", min_len=min_chain_len)
+            chain_segments += _emit_chain(msp, style, layer, x_breaks,
+                                          base_perp=ylo - off1, attach_perp=ylo,
+                                          axis="H", min_len=min_chain_len)
+        if len(y_breaks) >= 3:
+            chain_segments += _emit_chain(msp, style, layer, y_breaks,
+                                          base_perp=xlo - off1, attach_perp=xlo,
+                                          axis="V", min_len=min_chain_len)
+            chain_segments += _emit_chain(msp, style, layer, y_breaks,
+                                          base_perp=xhi + off1, attach_perp=xhi,
+                                          axis="V", min_len=min_chain_len)
+        created += chain_segments
+
+    isolation["chain_segments"] = chain_segments
 
     output_dxf.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(str(output_dxf))
