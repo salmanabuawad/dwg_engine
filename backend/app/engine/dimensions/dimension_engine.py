@@ -24,6 +24,12 @@ import numpy as np
 from app.engine.geometry.line_registry import extract_lines_from_doc, LineSegment
 from app.engine.isolation.main_plan_isolation import isolate_architectural_lines
 from app.engine.semantic.wall_graph import build_wall_chains, WallChain
+from app.engine.semantic.perimeter import (
+    classify_wall_exposure,
+    build_perimeter_polygon,
+    WallExposure,
+    PerimeterEdge,
+)
 
 def setup_dimstyle(doc: Any, style: str = "ISO-25") -> str:
     if style not in doc.dimstyles:
@@ -312,43 +318,27 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
 
     has_architecture = isolation.get("architectural_lines", 0) > 0 or isolation.get("input_lines", 0) > 0
 
-    # === Dimensions come ONLY from actual wall chains ===================
-    # NO bbox-spanning dimensions. NO "from leftmost-touching-wall to
-    # rightmost-touching-wall" measurements across room interiors.
-    # Every dimension that ends up on the drawing must run along ONE
-    # real wall chain — its length is chain.b - chain.a, never
-    # something larger.
-    #
-    # A wall chain is on the outer perimeter for a side when its
-    # perpendicular coordinate is in the outermost band of its
-    # orientation:
-    #   - top:    H walls whose c is within band_h of max(H walls' c)
-    #   - bottom: H walls whose c is within band_h of min(H walls' c)
-    #   - left:   V walls whose c is within band_v of min(V walls' c)
-    #   - right:  V walls whose c is within band_v of max(V walls' c)
-    # The band lets multi-step perimeters (L-shape, courtyards) keep
-    # multiple parallel walls as "perimeter" instead of dropping all
-    # but the absolute outermost.
+    # === Dimensions come ONLY from the perimeter polygon ===============
+    # Walls are classified by topology (semantic/perimeter.py): a wall is
+    # "exposed top" iff no parallel wall sits between it and the outside,
+    # etc. This generalises perimeter detection beyond rectangular
+    # buildings — L-shapes, U-shapes, courtyards, step-backs all classify
+    # correctly because exposure is a function of nearby walls, not bbox.
     perimeter_walls = 0
     interior_skipped = 0
     rejected_spans = 0
+    perimeter_stats: dict = {}
 
     h_chains = [c for c in wall_chains if c.orientation == "H"]
     v_chains = [c for c in wall_chains if c.orientation == "V"]
     if h_chains and v_chains and has_architecture:
-        h_cs = [c.c for c in h_chains]
-        v_cs = [c.c for c in v_chains]
-        h_ymax = max(h_cs); h_ymin = min(h_cs)
-        v_xmin = min(v_cs); v_xmax = max(v_cs)
-        # Outer-perimeter band tolerance — generous enough for L-shapes
-        # but tight enough that mid-building walls are excluded.
-        band_h = max(snap * 4.0, (h_ymax - h_ymin) * 0.03)
-        band_v = max(snap * 4.0, (v_xmax - v_xmin) * 0.03)
+        exposures = classify_wall_exposure(wall_chains)
+        perimeter_edges, perimeter_stats = build_perimeter_polygon(wall_chains, exposures)
+        chains_by_id = {c.id: c for c in wall_chains}
 
-        # Sanity ceiling for any single dimension: 1.5× the longest
-        # real wall chain on its orientation. Anything larger would
-        # span beyond the actual geometry it claims to measure and is
-        # rejected outright (semantic validation per the roadmap).
+        # Sanity ceiling: 1.5× the longest wall chain in each orientation.
+        # No emitted dimension may exceed it — defensive validation per
+        # the roadmap so an over-merge can't ship phantom spans.
         max_h_len = max((c.length for c in h_chains), default=0.0)
         max_v_len = max((c.length for c in v_chains), default=0.0)
         h_ceiling = max_h_len * 1.5 if max_h_len else float("inf")
@@ -420,45 +410,37 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
                         n += 1
             return n
 
-        for ch in h_chains:
-            if abs(ch.c - h_ymax) <= band_h:
-                emitted = _emit_wall_chain(ch, "top")
-                if emitted:
-                    perimeter_walls += 1
-                    created += emitted
-                else:
-                    rejected_spans += 1
-            elif abs(ch.c - h_ymin) <= band_h:
-                emitted = _emit_wall_chain(ch, "bottom")
-                if emitted:
-                    perimeter_walls += 1
-                    created += emitted
-                else:
-                    rejected_spans += 1
+        # Walk the perimeter polygon edges (already ordered top→right→
+        # bottom→left). Each edge is one exposed wall on one side — a
+        # chain exposed on top AND bottom contributes two perimeter edges.
+        seen: set[tuple[int, str]] = set()
+        for edge in perimeter_edges:
+            key = (edge.chain_id, edge.side)
+            if key in seen:
+                continue
+            seen.add(key)
+            ch = chains_by_id.get(edge.chain_id)
+            if ch is None:
+                continue
+            emitted = _emit_wall_chain(ch, edge.side)
+            if emitted:
+                perimeter_walls += 1
+                created += emitted
             else:
-                interior_skipped += 1
+                rejected_spans += 1
 
-        for ch in v_chains:
-            if abs(ch.c - v_xmin) <= band_v:
-                emitted = _emit_wall_chain(ch, "left")
-                if emitted:
-                    perimeter_walls += 1
-                    created += emitted
-                else:
-                    rejected_spans += 1
-            elif abs(ch.c - v_xmax) <= band_v:
-                emitted = _emit_wall_chain(ch, "right")
-                if emitted:
-                    perimeter_walls += 1
-                    created += emitted
-                else:
-                    rejected_spans += 1
-            else:
-                interior_skipped += 1
+        # Walls that were not classified as exposed on ANY side are
+        # interior partitions — reserved for cross-dimensions (next).
+        exposed_chain_ids = {e.chain_id for e in perimeter_edges}
+        for ch in wall_chains:
+            if ch.id in exposed_chain_ids:
+                continue
+            interior_skipped += 1
 
     isolation["perimeter_walls_dimensioned"] = perimeter_walls
     isolation["interior_walls_skipped"] = interior_skipped
     isolation["dimensions_rejected_over_ceiling"] = rejected_spans
+    isolation["perimeter_polygon"] = perimeter_stats
 
     output_dxf.parent.mkdir(parents=True, exist_ok=True)
     doc.saveas(str(output_dxf))
