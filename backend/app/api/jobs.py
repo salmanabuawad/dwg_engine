@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,9 +16,14 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 @router.post("", response_model=JobOut, status_code=201)
-async def upload_job(file: UploadFile, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+async def upload_job(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    dim_color: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
     try:
-        job = await create_job(db, file)
+        job = await create_job(db, file, dim_color=dim_color)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     background_tasks.add_task(process_job, SessionLocal, job.id)

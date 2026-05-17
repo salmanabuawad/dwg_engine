@@ -14,9 +14,25 @@ from app.engine.isolation.main_plan_isolation import isolate_architectural_lines
 
 # Dimension annotations sit ON the architectural plan. Building walls
 # stay solid black at 0.75 line weight so the structure reads first;
-# dimensions render as a mid-grey at thinner line weights so they
-# annotate without competing for visual hierarchy.
-DIM_COLOR = "#7a7a7a"
+# dimensions render in a per-job-configurable colour (defaults to a
+# mid-grey) at thinner line weights so they annotate without competing
+# for visual hierarchy.
+DEFAULT_DIM_COLOR = "#7a7a7a"
+
+
+def _valid_hex_color(value: str | None) -> str:
+    """Return value if it looks like a 7-char hex colour, else the default.
+    Defensive — the API validates too, but the renderer accepts anything
+    a caller passes and falls back gracefully."""
+    if not isinstance(value, str):
+        return DEFAULT_DIM_COLOR
+    s = value.strip()
+    if len(s) != 7 or not s.startswith("#"):
+        return DEFAULT_DIM_COLOR
+    hexpart = s[1:]
+    if all(c in "0123456789abcdefABCDEF" for c in hexpart):
+        return s
+    return DEFAULT_DIM_COLOR
 
 
 def _mtext_plain(text: str) -> str:
@@ -42,7 +58,9 @@ def _architectural_preview_bbox(doc):
     return (0, 0, 1, 1), []
 
 
-def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None = None) -> bool:
+def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None = None,
+                       *, dim_color: str | None = None) -> bool:
+    dim_color = _valid_hex_color(dim_color)
     doc = ezdxf.readfile(str(dxf_path))
     msp = doc.modelspace()
     segs = []
@@ -165,7 +183,7 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
             [x - dx * size + px * size * 0.35, y - dy * size + py * size * 0.35],
             [x - dx * size - px * size * 0.35, y - dy * size - py * size * 0.35],
         ])
-        ax.add_patch(Polygon(pts, closed=True, facecolor=DIM_COLOR, edgecolor=DIM_COLOR, linewidth=0.15))
+        ax.add_patch(Polygon(pts, closed=True, facecolor=dim_color, edgecolor=dim_color, linewidth=0.15))
 
     arrow_size = max(8, base * 0.004)
     text_offset = max(12, base * 0.007)
@@ -173,21 +191,21 @@ def render_dxf_preview(dxf_path: Path, output_png: Path, output_pdf: Path | None
     for d in dims:
         p1, p2, bp = d["p1"], d["p2"], d["base"]
         if d["ori"] == "H":
-            ax.plot([p1[0], p2[0]], [bp[1], bp[1]], color=DIM_COLOR, linewidth=0.30)
-            ax.plot([p1[0], p1[0]], [p1[1], bp[1]], color=DIM_COLOR, linewidth=0.18)
-            ax.plot([p2[0], p2[0]], [p2[1], bp[1]], color=DIM_COLOR, linewidth=0.18)
+            ax.plot([p1[0], p2[0]], [bp[1], bp[1]], color=dim_color, linewidth=0.30)
+            ax.plot([p1[0], p1[0]], [p1[1], bp[1]], color=dim_color, linewidth=0.18)
+            ax.plot([p2[0], p2[0]], [p2[1], bp[1]], color=dim_color, linewidth=0.18)
             draw_arrow((p1[0], bp[1]), (1, 0), arrow_size)
             draw_arrow((p2[0], bp[1]), (-1, 0), arrow_size)
             side = 1 if bp[1] >= (ylo + yhi) / 2 else -1
-            ax.text((p1[0] + p2[0]) / 2, bp[1] + side * text_offset, str(int(round(d["length"]))), fontsize=4.5, ha="center", va="center", color=DIM_COLOR)
+            ax.text((p1[0] + p2[0]) / 2, bp[1] + side * text_offset, str(int(round(d["length"]))), fontsize=4.5, ha="center", va="center", color=dim_color)
         else:
-            ax.plot([bp[0], bp[0]], [p1[1], p2[1]], color=DIM_COLOR, linewidth=0.30)
-            ax.plot([p1[0], bp[0]], [p1[1], p1[1]], color=DIM_COLOR, linewidth=0.18)
-            ax.plot([p2[0], bp[0]], [p2[1], p2[1]], color=DIM_COLOR, linewidth=0.18)
+            ax.plot([bp[0], bp[0]], [p1[1], p2[1]], color=dim_color, linewidth=0.30)
+            ax.plot([p1[0], bp[0]], [p1[1], p1[1]], color=dim_color, linewidth=0.18)
+            ax.plot([p2[0], bp[0]], [p2[1], p2[1]], color=dim_color, linewidth=0.18)
             draw_arrow((bp[0], p1[1]), (0, 1), arrow_size)
             draw_arrow((bp[0], p2[1]), (0, -1), arrow_size)
             side = 1 if bp[0] >= (xlo + xhi) / 2 else -1
-            ax.text(bp[0] + side * text_offset, (p1[1] + p2[1]) / 2, str(int(round(d["length"]))), fontsize=4.5, rotation=90, ha="center", va="center", color=DIM_COLOR)
+            ax.text(bp[0] + side * text_offset, (p1[1] + p2[1]) / 2, str(int(round(d["length"]))), fontsize=4.5, rotation=90, ha="center", va="center", color=dim_color)
 
     text_fontsize = max(5.0, min(10.0, base * 0.010))
     for t in texts:

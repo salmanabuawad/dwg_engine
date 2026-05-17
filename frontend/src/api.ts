@@ -10,6 +10,7 @@ export interface Job {
   created_at: string;
   started_at?: string | null;
   done_at?: string | null;
+  dim_color?: string | null;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -23,9 +24,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  upload(file: File): Promise<Job> {
+  upload(file: File, opts?: { dimColor?: string }): Promise<Job> {
     const fd = new FormData();
     fd.append('file', file);
+    if (opts?.dimColor) fd.append('dim_color', opts.dimColor);
     return request<Job>('/jobs', { method: 'POST', body: fd });
   },
   listJobs(): Promise<Job[]> {

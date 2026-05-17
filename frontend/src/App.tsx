@@ -1,15 +1,32 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Layers, RefreshCw } from 'lucide-react';
+import { Layers, Palette, RefreshCw } from 'lucide-react';
 import { api, Job } from './api';
 import { UploadZone } from './components/UploadZone';
 import { JobList } from './components/JobList';
 import { PreviewPanel } from './components/PreviewPanel';
+
+const DIM_COLOR_STORAGE_KEY = 'dwg-engine.dim_color';
+const DEFAULT_DIM_COLOR = '#7a7a7a';
+
+function loadDimColor(): string {
+  if (typeof localStorage === 'undefined') return DEFAULT_DIM_COLOR;
+  const raw = localStorage.getItem(DIM_COLOR_STORAGE_KEY);
+  if (!raw) return DEFAULT_DIM_COLOR;
+  return /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : DEFAULT_DIM_COLOR;
+}
 
 export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selected, setSelected] = useState<Job | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dimColor, setDimColor] = useState<string>(() => loadDimColor());
+
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(DIM_COLOR_STORAGE_KEY, dimColor);
+    }
+  }, [dimColor]);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -32,7 +49,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const job = await api.upload(file);
+      const job = await api.upload(file, { dimColor });
       setJobs((prev) => [job, ...prev]);
       setSelected(job);
     } catch (e) {
@@ -58,7 +75,26 @@ export default function App() {
             <div className="text-[11px] text-white/50">Semantic DXF dimensioning</div>
           </div>
         </div>
-        <button onClick={fetchJobs} className="rounded-lg p-2 text-white/70 hover:bg-white/10 hover:text-white"><RefreshCw className="h-4 w-4" /></button>
+        <div className="flex items-center gap-3">
+          <label
+            className="group flex h-9 cursor-pointer items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-2.5 hover:bg-white/10"
+            title="Dimension colour applied to every new upload"
+          >
+            <Palette className="h-3.5 w-3.5 text-white/70 group-hover:text-white" />
+            <span className="text-[11px] uppercase tracking-wider text-white/60">Dim</span>
+            <input
+              type="color"
+              value={dimColor}
+              onChange={(e) => setDimColor(e.target.value)}
+              className="h-5 w-7 cursor-pointer rounded border-0 bg-transparent p-0"
+              aria-label="Dimension line colour"
+            />
+            <span className="font-mono text-[10px] text-white/60">{dimColor.toLowerCase()}</span>
+          </label>
+          <button onClick={fetchJobs} className="rounded-lg p-2 text-white/70 hover:bg-white/10 hover:text-white" title="Refresh jobs">
+            <RefreshCw className="h-4 w-4" />
+          </button>
+        </div>
       </header>
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-96 flex-col border-r bg-white">

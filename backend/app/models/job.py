@@ -28,3 +28,7 @@ class Job(Base):
     output_dxf_path = Column(String(1024), nullable=True)
     preview_pdf_path = Column(String(1024), nullable=True)
     preview_png_path = Column(String(1024), nullable=True)
+
+    # Per-job rendering preferences. dim_color must be a 7-char hex string
+    # (#RRGGBB). When null, the renderer falls back to its module default.
+    dim_color = Column(String(7), nullable=True)

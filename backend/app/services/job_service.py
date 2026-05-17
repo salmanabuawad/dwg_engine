@@ -21,7 +21,20 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def create_job(db: Session, file: UploadFile) -> Job:
+def _normalize_dim_color(value: str | None) -> str | None:
+    """Sanitize a hex-colour input from the API. Returns None if absent
+    or invalid (so the renderer's default fires)."""
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if len(s) != 7 or not s.startswith("#"):
+        return None
+    if not all(c in "0123456789abcdefABCDEF" for c in s[1:]):
+        return None
+    return s
+
+
+async def create_job(db: Session, file: UploadFile, *, dim_color: str | None = None) -> Job:
     filename = file.filename or "input.dxf"
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -39,6 +52,7 @@ async def create_job(db: Session, file: UploadFile) -> Job:
         status="pending",
         size_bytes=len(data),
         input_path=str(input_path),
+        dim_color=_normalize_dim_color(dim_color),
     )
     db.add(job)
     db.commit()
@@ -75,7 +89,7 @@ def process_job(db_factory, job_id: str) -> None:
         db.commit()
 
         directory = job_dir(job_id)
-        report = process_uploaded_file(Path(job.input_path), directory)
+        report = process_uploaded_file(Path(job.input_path), directory, dim_color=job.dim_color)
         drawings = report.get("drawings") or []
         finished_at = utcnow()
 
@@ -115,6 +129,7 @@ def process_job(db_factory, job_id: str) -> None:
                 created_at=job.created_at,
                 started_at=job.started_at,
                 done_at=finished_at,
+                dim_color=job.dim_color,
                 report={"drawing": d, "parent_report_id": job.id},
             )
             db.add(child)
