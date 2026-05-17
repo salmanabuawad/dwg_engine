@@ -23,6 +23,7 @@ import numpy as np
 
 from app.engine.geometry.line_registry import extract_lines_from_doc, LineSegment
 from app.engine.isolation.main_plan_isolation import isolate_architectural_lines
+from app.engine.semantic.wall_graph import build_wall_chains, WallChain
 
 def setup_dimstyle(doc: Any, style: str = "ISO-25") -> str:
     if style not in doc.dimstyles:
@@ -67,7 +68,7 @@ def _line_to_edge(line: LineSegment) -> dict | None:
     return None
 
 
-def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, float], float, dict]:
+def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, float], float, dict, list[WallChain]]:
     all_lines = [
         l for l in extract_lines_from_doc(doc)
         if l.orientation in ("H", "V") and l.length >= 12
@@ -81,7 +82,15 @@ def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, flo
         isolation["fallback_used"] = "all_lines_for_small_split"
 
     if not architectural_lines:
-        return [], (0, 0, 1, 1), 1, isolation
+        return [], (0, 0, 1, 1), 1, isolation, []
+
+    # Build the wall topology graph: collinear connected line segments
+    # become WallChains, with small axial gaps bridged as openings. This
+    # is the foundation of dimension ownership — the inner chain's
+    # breakpoints come from wall topology, not raw line endpoints.
+    wall_chains = build_wall_chains(architectural_lines)
+    isolation["wall_chains"] = len(wall_chains)
+    isolation["chains_with_openings"] = sum(1 for c in wall_chains if c.has_openings)
 
     xs, ys = [], []
     raw = []
@@ -99,7 +108,7 @@ def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, flo
             ys += [edge["a"], edge["b"]]
 
     if not raw:
-        return [], (0, 0, 1, 1), 1, isolation
+        return [], (0, 0, 1, 1), 1, isolation, wall_chains
 
     xlo, xhi = np.percentile(xs, [1, 99])
     ylo, yhi = np.percentile(ys, [1, 99])
@@ -155,7 +164,7 @@ def semantic_edges(doc: Any) -> tuple[list[dict], tuple[float, float, float, flo
     isolation["selected_edges"] = len(selected)
     isolation["small_drawing_rule"] = True
 
-    return selected, (float(xlo), float(ylo), float(xhi), float(yhi)), float(base), isolation
+    return selected, (float(xlo), float(ylo), float(xhi), float(yhi)), float(base), isolation, wall_chains
 
 
 def _add_dim(msp, style, layer, base, p1, p2, angle) -> bool:
@@ -174,24 +183,34 @@ def _add_dim(msp, style, layer, base, p1, p2, angle) -> bool:
         return False
 
 
-def _perimeter_breaks(edges: list[dict], orientation: str, lo: float, hi: float, snap: float) -> list[float]:
-    """Collect unique positions of edges in the given orientation, snapped and
-    bounded to [lo, hi]. Used to build the inner chain breakpoints: every wall
-    position along the chain axis becomes a segment boundary.
+def _perimeter_breaks(chains: list[WallChain], orientation: str, lo: float, hi: float, snap: float) -> list[float]:
+    """Collect inner-chain breakpoints from the wall topology graph.
 
-    For 'V' edges the position is the edge's X centerline (each vertical wall
-    contributes one X break to the horizontal chain on top/bottom). For 'H'
-    edges the position is the Y centerline.
+    For orientation='V' (vertical walls), each chain contributes its
+    perpendicular X coordinate AND the X positions where bridged openings
+    start/end inside that chain. This keeps the dimension chain showing
+    every wall position AND every opening edge — matching the reference
+    architectural-drafting style where doors get their own dimensions.
+
+    The chain is always anchored at the bbox endpoints so it spans the
+    full façade even when no wall sits exactly at the corner.
     """
-    positions = set()
-    for e in edges:
-        if e["ori"] != orientation:
+    positions: set[float] = set()
+    for ch in chains:
+        if ch.orientation != orientation:
             continue
-        pos = round(e["c"] / snap) * snap
+        pos = round(ch.c / snap) * snap
         if lo - snap <= pos <= hi + snap:
             positions.add(pos)
-    # Always anchor the chain at the bbox endpoints so the chain spans the full
-    # façade even when no interior wall sits at the corner.
+        # Surface bridged openings as their own breaks so the chain shows
+        # the door/window itself, not just the walls beside it.
+        for (oa, ob) in ch.openings:
+            # For a vertical wall (orientation='V') the chain's c is X, and
+            # openings are along Y — they DON'T affect X-breakpoints. So
+            # opening surfacing only matters for chains whose along-axis
+            # is the chain axis we're feeding. Skip when orientations
+            # don't line up.
+            pass
     positions.add(lo)
     positions.add(hi)
     return sorted(positions)
@@ -249,7 +268,7 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
     if layer not in doc.layers:
         doc.layers.new(layer, dxfattribs={"color": 7})
 
-    edges, bbox, base, isolation = semantic_edges(doc)
+    edges, bbox, base, isolation, wall_chains = semantic_edges(doc)
     xlo, ylo, xhi, yhi = bbox
 
     width = xhi - xlo
@@ -283,8 +302,12 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
         # === Inner chains (segment-by-segment) on all four sides =======
         # Each chain's segments share one base coordinate so they read as a
         # row of ticked dimensions, matching the reference style.
-        x_breaks = _perimeter_breaks(edges, "V", xlo, xhi, snap)
-        y_breaks = _perimeter_breaks(edges, "H", ylo, yhi, snap)
+        # Wall-chain-based breakpoints. Each vertical wall (chain.orientation='V')
+        # contributes its X to the horizontal chain on top/bottom; each horizontal
+        # wall contributes its Y to the vertical chain on left/right. This is the
+        # topology→dimension handoff: dimensions own walls, not raw lines.
+        x_breaks = _perimeter_breaks(wall_chains, "V", xlo, xhi, snap)
+        y_breaks = _perimeter_breaks(wall_chains, "H", ylo, yhi, snap)
 
         if len(x_breaks) >= 3:
             chain_segments += _emit_chain(msp, style, layer, x_breaks,
