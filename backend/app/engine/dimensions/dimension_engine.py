@@ -183,36 +183,67 @@ def _add_dim(msp, style, layer, base, p1, p2, angle) -> bool:
         return False
 
 
-def _perimeter_breaks(chains: list[WallChain], orientation: str, lo: float, hi: float, snap: float) -> list[float]:
-    """Collect inner-chain breakpoints from the wall topology graph.
+def _perimeter_chain_breaks(
+    chains: list[WallChain],
+    bbox: tuple[float, float, float, float],
+    side: str,
+    snap: float,
+    touch_tol: float,
+) -> list[float]:
+    """Breakpoints for the inner dimension chain on `side` of the bbox.
 
-    For orientation='V' (vertical walls), each chain contributes its
-    perpendicular X coordinate AND the X positions where bridged openings
-    start/end inside that chain. This keeps the dimension chain showing
-    every wall position AND every opening edge — matching the reference
-    architectural-drafting style where doors get their own dimensions.
+    `side` ∈ {"top", "bottom", "left", "right"}.
 
-    The chain is always anchored at the bbox endpoints so it spans the
-    full façade even when no wall sits exactly at the corner.
+    The architectural-drafting convention (verified against the reference
+    samples) is that an inner chain on the top edge breaks at every
+    vertical wall that REACHES the top edge — not at every vertical wall
+    in the building. Interior partitions that don't touch the top
+    perimeter belong to interior cross-dimensions, not to the top chain.
+
+    A vertical wall (orientation='V') with along-axis range [a..b] in Y
+    "reaches the top" iff b >= yhi - touch_tol. Symmetric for bottom.
+
+    A horizontal wall (orientation='H') with along-axis range [a..b] in X
+    "reaches the left" iff a <= xlo + touch_tol. Symmetric for right.
+
+    The bbox endpoints always anchor the chain so the chain spans the
+    full façade even at the corners.
     """
+    xlo, ylo, xhi, yhi = bbox
     positions: set[float] = set()
+
+    if side in ("top", "bottom"):
+        chain_orientation = "V"
+        chain_lo, chain_hi = xlo, xhi
+        # Y threshold a vertical wall must reach to be a top/bottom
+        # perimeter wall.
+        if side == "top":
+            def touches(ch: WallChain) -> bool:
+                return ch.b >= yhi - touch_tol
+        else:
+            def touches(ch: WallChain) -> bool:
+                return ch.a <= ylo + touch_tol
+    else:  # "left" / "right"
+        chain_orientation = "H"
+        chain_lo, chain_hi = ylo, yhi
+        if side == "left":
+            def touches(ch: WallChain) -> bool:
+                return ch.a <= xlo + touch_tol
+        else:
+            def touches(ch: WallChain) -> bool:
+                return ch.b >= xhi - touch_tol
+
     for ch in chains:
-        if ch.orientation != orientation:
+        if ch.orientation != chain_orientation:
+            continue
+        if not touches(ch):
             continue
         pos = round(ch.c / snap) * snap
-        if lo - snap <= pos <= hi + snap:
+        if chain_lo - snap <= pos <= chain_hi + snap:
             positions.add(pos)
-        # Surface bridged openings as their own breaks so the chain shows
-        # the door/window itself, not just the walls beside it.
-        for (oa, ob) in ch.openings:
-            # For a vertical wall (orientation='V') the chain's c is X, and
-            # openings are along Y — they DON'T affect X-breakpoints. So
-            # opening surfacing only matters for chains whose along-axis
-            # is the chain axis we're feeding. Skip when orientations
-            # don't line up.
-            pass
-    positions.add(lo)
-    positions.add(hi)
+
+    positions.add(chain_lo)
+    positions.add(chain_hi)
     return sorted(positions)
 
 
@@ -300,27 +331,31 @@ def dimension_dxf(input_dxf: Path, output_dxf: Path) -> dict:
             created += 1
 
         # === Inner chains (segment-by-segment) on all four sides =======
-        # Each chain's segments share one base coordinate so they read as a
-        # row of ticked dimensions, matching the reference style.
-        # Wall-chain-based breakpoints. Each vertical wall (chain.orientation='V')
-        # contributes its X to the horizontal chain on top/bottom; each horizontal
-        # wall contributes its Y to the vertical chain on left/right. This is the
-        # topology→dimension handoff: dimensions own walls, not raw lines.
-        x_breaks = _perimeter_breaks(wall_chains, "V", xlo, xhi, snap)
-        y_breaks = _perimeter_breaks(wall_chains, "H", ylo, yhi, snap)
+        # Per-side breakpoints from the wall topology — only walls that
+        # actually REACH each perimeter contribute breaks to that side's
+        # chain. Interior partitions are reserved for cross-dimensions
+        # (a future iteration), matching the reference style where each
+        # side's chain corresponds to its visible wall positions.
+        touch_tol = max(snap * 4.0, base * 0.015)
+        top_breaks    = _perimeter_chain_breaks(wall_chains, bbox, "top",    snap, touch_tol)
+        bottom_breaks = _perimeter_chain_breaks(wall_chains, bbox, "bottom", snap, touch_tol)
+        left_breaks   = _perimeter_chain_breaks(wall_chains, bbox, "left",   snap, touch_tol)
+        right_breaks  = _perimeter_chain_breaks(wall_chains, bbox, "right",  snap, touch_tol)
 
-        if len(x_breaks) >= 3:
-            chain_segments += _emit_chain(msp, style, layer, x_breaks,
+        if len(top_breaks) >= 3:
+            chain_segments += _emit_chain(msp, style, layer, top_breaks,
                                           base_perp=yhi + off1, attach_perp=yhi,
                                           axis="H", min_len=min_chain_len)
-            chain_segments += _emit_chain(msp, style, layer, x_breaks,
+        if len(bottom_breaks) >= 3:
+            chain_segments += _emit_chain(msp, style, layer, bottom_breaks,
                                           base_perp=ylo - off1, attach_perp=ylo,
                                           axis="H", min_len=min_chain_len)
-        if len(y_breaks) >= 3:
-            chain_segments += _emit_chain(msp, style, layer, y_breaks,
+        if len(left_breaks) >= 3:
+            chain_segments += _emit_chain(msp, style, layer, left_breaks,
                                           base_perp=xlo - off1, attach_perp=xlo,
                                           axis="V", min_len=min_chain_len)
-            chain_segments += _emit_chain(msp, style, layer, y_breaks,
+        if len(right_breaks) >= 3:
+            chain_segments += _emit_chain(msp, style, layer, right_breaks,
                                           base_perp=xhi + off1, attach_perp=xhi,
                                           axis="V", min_len=min_chain_len)
         created += chain_segments
