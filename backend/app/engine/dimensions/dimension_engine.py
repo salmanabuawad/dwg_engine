@@ -143,8 +143,26 @@ def _overall_candidates(bbox, base_size) -> list[DimensionCandidate]:
     ]
 
 def build_dimension_candidates(doc: Any) -> tuple[list[DimensionCandidate], dict]:
-    all_lines = [l for l in extract_lines_from_doc(doc) if l.orientation in ("H", "V") and l.length >= 10]
+    raw_lines = extract_lines_from_doc(doc)
+    truncated = getattr(extract_lines_from_doc, "last_truncated", False)
+    all_lines = [l for l in raw_lines if l.orientation in ("H", "V") and l.length >= 10]
+
+    # Sanity classifier — is this even an architectural drawing? A cover
+    # letter / form / receipt has lots of TEXT but very few drawing
+    # primitives. Below the floor we skip dimensioning entirely instead
+    # of emitting garbage on whatever stray lines exist.
+    H_count = sum(1 for l in all_lines if l.orientation == "H")
+    V_count = sum(1 for l in all_lines if l.orientation == "V")
+    if len(all_lines) < 20 or H_count < 4 or V_count < 4:
+        return [], {
+            "error": "not_architectural",
+            "reason": f"H={H_count} V={V_count} total={len(all_lines)} — below threshold",
+            "input_lines": len(raw_lines),
+            "extraction_truncated": truncated,
+        }
+
     architectural_lines, isolation = isolate_architectural_lines(all_lines)
+    isolation["extraction_truncated"] = truncated
     if not architectural_lines and all_lines:
         architectural_lines = all_lines
         isolation["fallback_used"] = "all_lines_for_small_split"
