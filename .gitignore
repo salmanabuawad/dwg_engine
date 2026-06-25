@@ -15,3 +15,5 @@ server_files/outputs/
 learning/
 # Local code-export snapshot — not source of truth.
 code.zip
+# Local data download (FTP / customer uploads) — too large + not source.
+data/
