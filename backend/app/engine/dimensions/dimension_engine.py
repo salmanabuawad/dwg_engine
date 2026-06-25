@@ -59,6 +59,81 @@ def _candidate_from_chain(chain, bbox, base_size, index: int) -> DimensionCandid
             source_type="wall_chain", source_id=chain.id, priority=2)
     return None
 
+
+def _opening_and_segment_candidates(chain, bbox, base_size) -> list[DimensionCandidate]:
+    """For each WallChain with openings, emit a layered inner chain:
+
+    1) An OPENING dim per opening — placed slightly closer to the wall
+       than the chain's overall dim. Surfaces door/window widths
+       (the 220/245/280 style numbers in the reference plans).
+    2) A SEGMENT dim per wall section BETWEEN openings — labels the
+       solid-wall pieces that flank each opening (the 5800/840 style
+       breakdowns). The chain's start..end is anchored, openings carve
+       it into sub-segments.
+
+    Placed inside (closer to the wall) than the chain's overall dim so
+    they read as a stacked layer, matching the reference samples.
+    """
+    if not chain.openings:
+        return []
+    xlo, ylo, xhi, yhi = bbox
+    seg_off = max(20.0, base_size * 0.022)  # inner layer, close to the wall
+    op_off  = max(12.0, base_size * 0.011)  # innermost layer, very close
+
+    breaks = sorted({chain.start, chain.end}.union(
+        v for o in chain.openings for v in (o.start, o.end)
+    ))
+    out: list[DimensionCandidate] = []
+
+    if chain.orientation == "H":
+        y = chain.axis
+        side = 1 if y >= (ylo + yhi) / 2 else -1
+        # Solid-wall segments between break points
+        for i in range(len(breaks) - 1):
+            a, b = breaks[i], breaks[i + 1]
+            if b - a <= 0:
+                continue
+            # Is this stretch an opening or a solid wall?
+            is_opening = any(abs(a - o.start) < 0.5 and abs(b - o.end) < 0.5 for o in chain.openings)
+            if is_opening:
+                # Surface the opening itself on the innermost layer.
+                out.append(DimensionCandidate(
+                    id=f"DC_OPEN_{chain.id}_{i}", orientation="H",
+                    p1=(a, y), p2=(b, y),
+                    base=((a + b) / 2, y + side * op_off),
+                    length=b - a,
+                    source_type="opening", source_id=f"{chain.id}:{i}", priority=4))
+            else:
+                out.append(DimensionCandidate(
+                    id=f"DC_SEG_{chain.id}_{i}", orientation="H",
+                    p1=(a, y), p2=(b, y),
+                    base=((a + b) / 2, y + side * seg_off),
+                    length=b - a,
+                    source_type="wall_chain", source_id=f"{chain.id}:seg{i}", priority=3))
+    else:  # "V"
+        x = chain.axis
+        side = 1 if x >= (xlo + xhi) / 2 else -1
+        for i in range(len(breaks) - 1):
+            a, b = breaks[i], breaks[i + 1]
+            if b - a <= 0:
+                continue
+            is_opening = any(abs(a - o.start) < 0.5 and abs(b - o.end) < 0.5 for o in chain.openings)
+            if is_opening:
+                out.append(DimensionCandidate(
+                    id=f"DC_OPEN_{chain.id}_{i}", orientation="V",
+                    p1=(x, a), p2=(x, b),
+                    base=(x + side * op_off, (a + b) / 2),
+                    length=b - a,
+                    source_type="opening", source_id=f"{chain.id}:{i}", priority=4))
+            else:
+                out.append(DimensionCandidate(
+                    id=f"DC_SEG_{chain.id}_{i}", orientation="V",
+                    p1=(x, a), p2=(x, b),
+                    base=(x + side * seg_off, (a + b) / 2),
+                    length=b - a,
+                    source_type="wall_chain", source_id=f"{chain.id}:seg{i}", priority=3))
+    return out
+
 def _overall_candidates(bbox, base_size) -> list[DimensionCandidate]:
     xlo, ylo, xhi, yhi = bbox
     off = max(70.0, base_size * 0.075)
@@ -89,10 +164,25 @@ def build_dimension_candidates(doc: Any) -> tuple[list[DimensionCandidate], dict
 
     candidates = []
     candidates.extend(_overall_candidates(bbox, base_size))
+    # Track chains with openings so we can layer extra inner dims.
+    opening_chains_count = 0
+    opening_dims_added = 0
+    segment_dims_added = 0
     for i, chain in enumerate(sorted(usable_chains, key=lambda c: c.length, reverse=True)[:36]):
         cand = _candidate_from_chain(chain, bbox, base_size, i)
         if cand:
             candidates.append(cand)
+        # Per-opening + per-segment inner layer. Adds the 220/245 door
+        # dims and 5800/840 wall-segment dims seen in reference plans.
+        inner = _opening_and_segment_candidates(chain, bbox, base_size)
+        if inner:
+            opening_chains_count += 1
+            for ic in inner:
+                if ic.source_type == "opening":
+                    opening_dims_added += 1
+                else:
+                    segment_dims_added += 1
+            candidates.extend(inner)
 
     valid = []
     seen = set()
@@ -113,8 +203,11 @@ def build_dimension_candidates(doc: Any) -> tuple[list[DimensionCandidate], dict
         "topology": {"nodes": len(graph.nodes), "edges": len(graph.edges), "snap_tolerance": graph.snap_tolerance},
         "wall_chains": chains_to_debug(chains),
         "usable_chains": len(usable_chains),
+        "opening_chains": opening_chains_count,
+        "opening_dims": opening_dims_added,
+        "segment_dims": segment_dims_added,
         "dimension_candidates": [c.to_dict() for c in valid],
-        "note": "Dimensions are generated from topology wall chains, not merged area blobs.",
+        "note": "Dimensions: chains + per-opening + per-segment inner layer (reference style).",
     }
     return valid, debug
 
